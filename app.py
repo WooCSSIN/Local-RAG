@@ -287,9 +287,10 @@ Chat với tài liệu — Hybrid BM25+FAISS+Reranker+LangGraph
             with gr.Column(scale=1, min_width=300):
                 gr.Markdown("### 📁 Upload tài liệu")
                 file_input = gr.File(
-                    label="Chọn file (PDF, DOCX, TXT, HTML, MD)",
+                    label="Chọn file (PDF, DOCX, XLSX, TXT, HTML, MD, ảnh)",
                     file_count="multiple",
-                    file_types=[".pdf", ".docx", ".xlsx", ".txt", ".html", ".md"],
+                    file_types=[".pdf", ".docx", ".xlsx", ".txt", ".html", ".md",
+                                ".png", ".jpg", ".jpeg"],
                 )
                 upload_btn = gr.Button("🔄 Xử lý & Index", variant="primary")
                 upload_status = gr.Textbox(label="Trạng thái", interactive=False, lines=5)

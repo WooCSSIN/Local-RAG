@@ -16,7 +16,9 @@ logger = logging.getLogger(__name__)
 DOCLING_SUPPORTED = {".pdf", ".docx", ".xlsx", ".html", ".htm", ".md", ".markdown"}
 TEXT_FORMATS = {".txt"}
 # R10: thêm .docx và .xlsx vào supported list
-ALL_SUPPORTED = DOCLING_SUPPORTED | TEXT_FORMATS
+# R11: thêm ảnh
+IMAGE_FORMATS = {".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".tif", ".webp"}
+ALL_SUPPORTED = DOCLING_SUPPORTED | TEXT_FORMATS | IMAGE_FORMATS
 
 
 class DocumentProcessor:
@@ -75,6 +77,8 @@ class DocumentProcessor:
             docs = self._process_html(str(path))
         elif suffix in {".md", ".markdown", ".txt"}:
             docs = self._process_text(str(path))
+        elif suffix in IMAGE_FORMATS:
+            docs = self._process_image(str(path))         # R11
         else:
             raise ValueError(
                 f"Định dạng '{suffix}' chưa hỗ trợ.\n"
@@ -246,6 +250,49 @@ class DocumentProcessor:
         if not all_docs:
             raise ValueError(f"File XLSX rỗng hoặc không có dữ liệu: {file_path}")
         return all_docs
+
+    # ------------------------------------------------------------------
+    # R11: Image OCR support
+    # ------------------------------------------------------------------
+
+    def _process_image(self, file_path: str) -> list[Document]:
+        """
+        Trích xuất text từ ảnh dùng Tesseract OCR (qua pytesseract).
+        Yêu cầu: Tesseract được cài trên hệ thống.
+        Windows: https://github.com/UB-Mannheim/tesseract/wiki
+        """
+        try:
+            import pytesseract
+            from PIL import Image
+        except ImportError:
+            raise ImportError(
+                "pytesseract hoặc Pillow chưa cài.\n"
+                "Chạy: pip install pytesseract Pillow\n"
+                "Và cài Tesseract: https://github.com/UB-Mannheim/tesseract/wiki"
+            )
+
+        try:
+            img = Image.open(file_path)
+            # Thử OCR với tiếng Việt + tiếng Anh
+            try:
+                text = pytesseract.image_to_string(img, lang="vie+eng")
+            except pytesseract.TesseractError:
+                # Fallback chỉ tiếng Anh nếu không có language pack tiếng Việt
+                text = pytesseract.image_to_string(img, lang="eng")
+
+            text = text.strip()
+            if not text:
+                raise ValueError(f"OCR không trích xuất được text từ ảnh: {file_path}")
+
+            logger.info(f"OCR trích xuất {len(text)} ký tự từ {Path(file_path).name}")
+            return self._split_text(text, file_path, processor="tesseract-ocr")
+
+        except pytesseract.TesseractNotFoundError:
+            raise RuntimeError(
+                "Tesseract chưa được cài hoặc không tìm thấy.\n"
+                "Windows: Tải tại https://github.com/UB-Mannheim/tesseract/wiki\n"
+                "Linux: sudo apt install tesseract-ocr tesseract-ocr-vie"
+            )
 
     # ------------------------------------------------------------------
     # HTML + Text fallback
