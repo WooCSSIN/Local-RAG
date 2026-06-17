@@ -17,6 +17,7 @@ from src.utils import setup_logging, render_pdf_page, format_sources
 from src.document_processor import DocumentProcessor
 from src.retriever import HybridRAGRetriever
 from src.llm_factory import get_llm, get_provider_name, invalidate_llm_cache
+from src.session_manager import SessionManager
 
 setup_logging("INFO")
 logger = logging.getLogger(__name__)
@@ -26,6 +27,7 @@ logger = logging.getLogger(__name__)
 # ------------------------------------------------------------------
 processor = DocumentProcessor(chunk_size=config.chunk_size, chunk_overlap=config.chunk_overlap)
 retriever = HybridRAGRetriever(config)
+session_mgr = SessionManager()  # R8+R9: session manager
 
 
 # ------------------------------------------------------------------
@@ -153,17 +155,17 @@ def chat_fn(message: str, history: list):
 
         messages = [system_msg, HumanMessage(content=user_content)]
 
-        # Stream LLM response — R2: dùng cached LLM, R7: ổn định streaming
+        # Stream LLM response — R2: cached LLM, R7: stable streaming
         try:
             llm = get_llm(config)
             full_answer = ""
             for chunk in llm.stream(messages):
                 token = chunk.content if hasattr(chunk, "content") else str(chunk)
-                if token:  # R7: bỏ qua chunk rỗng
+                if token:
                     full_answer += token
                     yield full_answer
         except Exception as conn_err:
-            logger.warning(f"LLM connection error, thử refresh cache: {conn_err}")
+            logger.warning(f"LLM connection error, refresh cache: {conn_err}")
             try:
                 llm = get_llm(config, force_refresh=True)
                 full_answer = ""
@@ -175,14 +177,22 @@ def chat_fn(message: str, history: list):
             except Exception as e:
                 raise e
 
-        # Append sources
+        # Append nguồn tài liệu
         if source_info:
-            full_answer += f"\n\n---\nNguon:\n{source_info}"
+            full_answer += f"\n\n---\n**Nguồn:**\n{source_info}"
             yield full_answer
+
+        # R8: Lưu cặp hội thoại vào session persistent
+        try:
+            sid = session_mgr.ensure_current()
+            session_mgr.add_message(sid, "user", message)
+            session_mgr.add_message(sid, "assistant", full_answer)
+        except Exception as e:
+            logger.warning(f"Không thể lưu session: {e}")
 
     except Exception as e:
         logger.error(f"Chat error: {e}", exc_info=True)
-        yield f"Loi: {str(e)}"
+        yield f"❌ Lỗi: {str(e)}"
 
 
 # ------------------------------------------------------------------
@@ -282,7 +292,6 @@ Chat với tài liệu — Hybrid BM25+FAISS+Reranker+LangGraph
                     file_types=[".pdf", ".docx", ".xlsx", ".txt", ".html", ".md"],
                 )
                 upload_btn = gr.Button("🔄 Xử lý & Index", variant="primary")
-                # R3: progress hiển thị ngay khi xử lý
                 upload_status = gr.Textbox(label="Trạng thái", interactive=False, lines=5)
                 pdf_preview = gr.Image(label="PDF Preview", height=350)
 
@@ -294,7 +303,26 @@ Chat với tài liệu — Hybrid BM25+FAISS+Reranker+LangGraph
             # ---- Cột phải: Chat ----
             with gr.Column(scale=3):
                 gr.Markdown("### 💬 Chat")
-                chatbot_ui = gr.Chatbot(height=480)
+
+                # R9: Session management panel
+                with gr.Accordion("📂 Quản lý phiên chat", open=False):
+                    with gr.Row():
+                        new_session_btn = gr.Button("➕ Phiên mới", size="sm", scale=1)
+                        session_name_input = gr.Textbox(
+                            placeholder="Tên phiên mới...",
+                            show_label=False, scale=3, container=False
+                        )
+                    session_dropdown = gr.Dropdown(
+                        choices=[], label="Chọn phiên", interactive=True
+                    )
+                    with gr.Row():
+                        rename_input = gr.Textbox(
+                            placeholder="Tên mới...", show_label=False, scale=3, container=False
+                        )
+                        rename_btn = gr.Button("✏️ Đổi tên", size="sm", scale=1)
+                        delete_session_btn = gr.Button("🗑️ Xóa phiên", size="sm", scale=1, variant="stop")
+
+                chatbot_ui = gr.Chatbot(height=430)
                 with gr.Row():
                     msg_box = gr.Textbox(
                         placeholder="Nhập câu hỏi, nhấn Enter...",
@@ -336,6 +364,59 @@ Chat với tài liệu — Hybrid BM25+FAISS+Reranker+LangGraph
             inputs=[file_input],
             outputs=[upload_status, pdf_preview],
         )
+
+        # R8+R9: Session management events
+        def _refresh_sessions():
+            sessions = session_mgr.list_sessions()
+            choices = [f"{s['name']} ({s['msg_count']} msgs)" for s in sessions]
+            ids = [s["id"] for s in sessions]
+            # Map label -> id
+            choices_with_id = [(s["name"] + f" [{s['id']}]", s["id"]) for s in sessions]
+            return gr.update(choices=choices_with_id, value=None)
+
+        def _new_session(name):
+            sid = session_mgr.create_session(name.strip() if name and name.strip() else None)
+            return [], _refresh_sessions()
+
+        def _switch_session(sid_label):
+            if not sid_label:
+                return []
+            # sid_label dạng "Tên [sid]"
+            import re
+            match = re.search(r"\[([a-f0-9]+)\]$", str(sid_label))
+            if match:
+                sid = match.group(1)
+                return session_mgr.switch_to(sid)
+            return []
+
+        def _rename_session(sid_label, new_name):
+            if not sid_label or not new_name.strip():
+                return _refresh_sessions()
+            import re
+            match = re.search(r"\[([a-f0-9]+)\]$", str(sid_label))
+            if match:
+                session_mgr.rename_session(match.group(1), new_name.strip())
+            return _refresh_sessions()
+
+        def _delete_session(sid_label):
+            if not sid_label:
+                return [], _refresh_sessions()
+            import re
+            match = re.search(r"\[([a-f0-9]+)\]$", str(sid_label))
+            if match:
+                sid = match.group(1)
+                if sid == session_mgr.current_id:
+                    session_mgr.create_session()
+                session_mgr.delete_session(sid)
+            return [], _refresh_sessions()
+
+        new_session_btn.click(fn=_new_session, inputs=[session_name_input], outputs=[chatbot_ui, session_dropdown])
+        session_dropdown.change(fn=_switch_session, inputs=[session_dropdown], outputs=[chatbot_ui])
+        rename_btn.click(fn=_rename_session, inputs=[session_dropdown, rename_input], outputs=[session_dropdown])
+        delete_session_btn.click(fn=_delete_session, inputs=[session_dropdown], outputs=[chatbot_ui, session_dropdown])
+
+        # Load sessions on startup
+        demo.load(fn=lambda: _refresh_sessions(), outputs=[session_dropdown])
 
         # Chat
         def _submit(message, history):
@@ -400,7 +481,6 @@ Chat với tài liệu — Hybrid BM25+FAISS+Reranker+LangGraph
 
         status_btn.click(fn=system_status_fn, outputs=[system_status])
         clear_btn.click(fn=clear_index_fn, outputs=[upload_status, pdf_preview])
-        demo.load(fn=system_status_fn, outputs=[system_status])
 
     return demo
 
