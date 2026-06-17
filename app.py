@@ -60,19 +60,28 @@ def upload_and_index(files):
 # ------------------------------------------------------------------
 def chat_fn(message: str, history: list):
     """Generator — yield partial response cho Gradio streaming."""
+    message = str(message) if message else ""
     if not message.strip():
         return
 
     from langchain_core.messages import HumanMessage, AIMessage
 
-    # Convert Gradio history [user, bot] tuples -> LangChain messages
+    # Convert Gradio 6 history (list of dicts) -> LangChain messages
     lc_history = []
     for turn in (history or []):
-        if isinstance(turn, (list, tuple)) and len(turn) == 2:
+        if isinstance(turn, dict):
+            role = turn.get("role", "")
+            content = turn.get("content") or ""
+            if role == "user" and content:
+                lc_history.append(HumanMessage(content=content))
+            elif role == "assistant" and content:
+                lc_history.append(AIMessage(content=content))
+        elif isinstance(turn, (list, tuple)) and len(turn) == 2:
+            # fallback cho format cũ
             human, ai = turn
             if human:
                 lc_history.append(HumanMessage(content=str(human)))
-            if ai and ai is not None:
+            if ai:
                 lc_history.append(AIMessage(content=str(ai)))
 
     try:
@@ -226,21 +235,37 @@ Chat voi tai lieu — Hybrid BM25+FAISS+Reranker+LangGraph
         upload_btn.click(fn=upload_and_index, inputs=[file_input], outputs=[upload_status, pdf_preview])
 
         def _submit(message, history):
-            if not message.strip():
+            if not message or not str(message).strip():
                 return history, ""
             history = list(history or [])
-            history.append([message, None])
+            history.append({"role": "user", "content": str(message)})
+            history.append({"role": "assistant", "content": "⏳ Đang xử lý..."})
             return history, ""
 
         def _stream(history):
-            if not history:
+            if not history or len(history) < 2:
                 yield history
                 return
-            last_user = history[-1][0]
-            prev = history[:-1]
+            # Tìm user message cuối cùng (kế trước assistant)
+            last_user_msg = None
+            for turn in reversed(history):
+                if isinstance(turn, dict) and turn.get("role") == "user":
+                    last_user_msg = turn.get("content", "")
+                    break
+            if not last_user_msg:
+                yield history
+                return
+
+            # Lấy history trước đó (không gồm cặp user+assistant placeholder cuối)
+            prev_history = history[:-2] if len(history) >= 2 else []
+
             history = list(history)
-            for partial in chat_fn(last_user, prev):
-                history[-1] = [last_user, partial]
+            try:
+                for partial in chat_fn(last_user_msg, prev_history):
+                    history[-1] = {"role": "assistant", "content": partial}
+                    yield history
+            except Exception as e:
+                history[-1] = {"role": "assistant", "content": f"❌ Lỗi: {e}"}
                 yield history
 
         msg_box.submit(
