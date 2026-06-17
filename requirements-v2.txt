@@ -26,6 +26,8 @@ flashrank>=0.2.9
 # Document processing
 pypdf>=4.0.0
 PyMuPDF>=1.24.0
+python-docx>=1.1.0          # R10: DOCX support
+openpyxl>=3.1.0             # R10: XLSX support
 
 # UI
 gradio>=5.0.0

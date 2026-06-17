@@ -1,27 +1,28 @@
 """
 document_processor.py — Xử lý tài liệu đa định dạng
 Hỗ trợ: PDF, Word (.docx), Excel (.xlsx), HTML, Markdown, TXT
-Dùng Docling với fallback PyPDF nếu Docling lỗi.
+R10: Thêm DOCX (python-docx fallback) + XLSX (openpyxl fallback)
+Dùng Docling với fallback khi không có.
 """
 import logging
 from pathlib import Path
-from typing import Optional
 
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 logger = logging.getLogger(__name__)
 
-# Các định dạng Docling hỗ trợ
+# Định dạng Docling hỗ trợ
 DOCLING_SUPPORTED = {".pdf", ".docx", ".xlsx", ".html", ".htm", ".md", ".markdown"}
-# Fallback đơn giản
 TEXT_FORMATS = {".txt"}
+# R10: thêm .docx và .xlsx vào supported list
+ALL_SUPPORTED = DOCLING_SUPPORTED | TEXT_FORMATS
 
 
 class DocumentProcessor:
     """
     Xử lý tài liệu đa định dạng, trả về list[Document] sẵn để index.
-    Ưu tiên Docling cho chất lượng tốt nhất. Fallback PyPDF/text nếu cần.
+    Ưu tiên Docling nếu có. Fallback riêng cho từng định dạng.
     """
 
     def __init__(self, chunk_size: int = 512, chunk_overlap: int = 64):
@@ -36,12 +37,11 @@ class DocumentProcessor:
         )
 
     def _check_docling(self) -> bool:
-        """Kiểm tra Docling đã cài chưa."""
         try:
-            from docling.document_converter import DocumentConverter  # noqa: F401
+            from docling.document_converter import DocumentConverter  # noqa
             return True
         except ImportError:
-            logger.warning("Docling chưa được cài. Dùng PyPDF fallback cho PDF.")
+            logger.warning("Docling chưa được cài. Dùng fallback cho từng định dạng.")
             return False
 
     # ------------------------------------------------------------------
@@ -51,55 +51,57 @@ class DocumentProcessor:
     def process(self, file_path: str) -> list[Document]:
         """
         Xử lý file và trả về list Document đã chunk.
-        Args:
-            file_path: Đường dẫn file (str hoặc Path)
-        Returns:
-            list[Document] sẵn để add vào vector store
+        Hỗ trợ: PDF, DOCX, XLSX, HTML, MD, TXT
         """
         path = Path(file_path)
         if not path.exists():
             raise FileNotFoundError(f"File không tồn tại: {file_path}")
 
         suffix = path.suffix.lower()
-        logger.info(f"Xử lý file: {path.name} (loại: {suffix})")
+        logger.info(f"Xử lý: {path.name} ({suffix})")
 
+        # Dùng Docling nếu có và định dạng được hỗ trợ
         if suffix in DOCLING_SUPPORTED and self._docling_available:
             docs = self._process_with_docling(str(path))
+
+        # Fallback theo từng định dạng
         elif suffix == ".pdf":
             docs = self._process_pdf_fallback(str(path))
-        elif suffix in TEXT_FORMATS:
+        elif suffix == ".docx":
+            docs = self._process_docx(str(path))          # R10
+        elif suffix == ".xlsx":
+            docs = self._process_xlsx(str(path))          # R10
+        elif suffix in {".html", ".htm"}:
+            docs = self._process_html(str(path))
+        elif suffix in {".md", ".markdown", ".txt"}:
             docs = self._process_text(str(path))
         else:
-            raise ValueError(f"Định dạng chưa hỗ trợ: {suffix}. "
-                             f"Hỗ trợ: {DOCLING_SUPPORTED | TEXT_FORMATS}")
+            raise ValueError(
+                f"Định dạng '{suffix}' chưa hỗ trợ.\n"
+                f"Hỗ trợ: {', '.join(sorted(ALL_SUPPORTED))}"
+            )
 
-        logger.info(f"Hoàn thành: {len(docs)} chunks từ {path.name}")
+        logger.info(f"✅ {len(docs)} chunks từ {path.name}")
         return docs
 
     def process_multiple(self, file_paths: list[str]) -> list[Document]:
-        """Xử lý nhiều file cùng lúc."""
         all_docs = []
         for fp in file_paths:
             try:
-                docs = self.process(fp)
-                all_docs.extend(docs)
+                all_docs.extend(self.process(fp))
             except Exception as e:
                 logger.error(f"Lỗi xử lý {fp}: {e}")
         return all_docs
 
     # ------------------------------------------------------------------
-    # Private methods
+    # Docling (best quality)
     # ------------------------------------------------------------------
 
     def _process_with_docling(self, file_path: str) -> list[Document]:
-        """Dùng Docling — chất lượng cao nhất, hiểu cấu trúc document."""
         from docling.document_converter import DocumentConverter
-
         converter = DocumentConverter()
         result = converter.convert(file_path)
         dl_doc = result.document
-
-        # Thử dùng HybridChunker nếu có
         try:
             from docling.chunking import HybridChunker
             chunker = HybridChunker(max_tokens=self.chunk_size, merge_peers=True)
@@ -119,33 +121,157 @@ class DocumentProcessor:
                         "page": meta.get("page_no"),
                         "heading": (meta.get("headings") or [None])[0],
                         "doc_type": Path(file_path).suffix,
-                        "processor": "docling-hybrid",
+                        "processor": "docling",
                     }
                 ))
             return docs
         except Exception:
-            # Fallback: export markdown rồi split
             md_text = dl_doc.export_to_markdown()
             return self._split_text(md_text, file_path, processor="docling-md")
 
+    # ------------------------------------------------------------------
+    # PDF fallback
+    # ------------------------------------------------------------------
+
     def _process_pdf_fallback(self, file_path: str) -> list[Document]:
-        """Fallback dùng PyPDF khi Docling không có."""
         from pypdf import PdfReader
         reader = PdfReader(file_path)
-        all_text = ""
+        pages_text = []
         for i, page in enumerate(reader.pages):
             text = page.extract_text() or ""
-            all_text += f"\n\n[Trang {i+1}]\n{text}"
-        return self._split_text(all_text, file_path, processor="pypdf")
+            if text.strip():
+                pages_text.append(f"[Trang {i+1}]\n{text}")
+        return self._split_text("\n\n".join(pages_text), file_path, processor="pypdf")
+
+    # ------------------------------------------------------------------
+    # R10: DOCX support
+    # ------------------------------------------------------------------
+
+    def _process_docx(self, file_path: str) -> list[Document]:
+        """
+        Xử lý Word .docx dùng python-docx.
+        Giữ cấu trúc heading → paragraph.
+        """
+        try:
+            from docx import Document as DocxDocument
+        except ImportError:
+            raise ImportError(
+                "python-docx chưa cài. Chạy: pip install python-docx"
+            )
+
+        doc = DocxDocument(file_path)
+        lines = []
+        for para in doc.paragraphs:
+            text = para.text.strip()
+            if not text:
+                continue
+            # Giữ heading dưới dạng markdown
+            style = para.style.name if para.style else ""
+            if "Heading" in style:
+                level = style.replace("Heading ", "").strip()
+                try:
+                    hashes = "#" * int(level)
+                    lines.append(f"{hashes} {text}")
+                except ValueError:
+                    lines.append(f"## {text}")
+            else:
+                lines.append(text)
+
+        # Xử lý tables
+        for table in doc.tables:
+            rows = []
+            for row in table.rows:
+                cells = [cell.text.strip() for cell in row.cells]
+                rows.append(" | ".join(cells))
+            if rows:
+                lines.append("\n".join(rows))
+
+        full_text = "\n\n".join(lines)
+        if not full_text.strip():
+            raise ValueError(f"File DOCX rỗng hoặc không có text: {file_path}")
+
+        return self._split_text(full_text, file_path, processor="python-docx")
+
+    # ------------------------------------------------------------------
+    # R10: XLSX support
+    # ------------------------------------------------------------------
+
+    def _process_xlsx(self, file_path: str) -> list[Document]:
+        """
+        Xử lý Excel .xlsx dùng openpyxl.
+        Mỗi sheet → text với header context.
+        """
+        try:
+            import openpyxl
+        except ImportError:
+            raise ImportError("openpyxl chưa cài. Chạy: pip install openpyxl")
+
+        wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
+        all_docs = []
+
+        for sheet_name in wb.sheetnames:
+            ws = wb[sheet_name]
+            rows = list(ws.iter_rows(values_only=True))
+            if not rows:
+                continue
+
+            # Hàng đầu là header
+            headers = [str(h) if h is not None else f"Cột_{i}" for i, h in enumerate(rows[0])]
+
+            # Mỗi hàng data → text có context header (R10 requirement)
+            text_rows = [f"Sheet: {sheet_name} | Cột: {', '.join(headers)}"]
+            for row in rows[1:]:
+                cells = [
+                    f"{headers[i]}: {str(v)}"
+                    for i, v in enumerate(row)
+                    if v is not None and str(v).strip()
+                ]
+                if cells:
+                    text_rows.append(" | ".join(cells))
+
+            sheet_text = "\n".join(text_rows)
+            if sheet_text.strip():
+                sheet_docs = self._split_text(
+                    sheet_text,
+                    file_path,
+                    processor="openpyxl",
+                )
+                # Thêm metadata sheet
+                for d in sheet_docs:
+                    d.metadata["sheet_name"] = sheet_name
+                    d.metadata["headers"] = headers
+                all_docs.extend(sheet_docs)
+
+        wb.close()
+        if not all_docs:
+            raise ValueError(f"File XLSX rỗng hoặc không có dữ liệu: {file_path}")
+        return all_docs
+
+    # ------------------------------------------------------------------
+    # HTML + Text fallback
+    # ------------------------------------------------------------------
+
+    def _process_html(self, file_path: str) -> list[Document]:
+        try:
+            from bs4 import BeautifulSoup
+            with open(file_path, encoding="utf-8", errors="replace") as f:
+                soup = BeautifulSoup(f.read(), "html.parser")
+            text = soup.get_text(separator="\n")
+        except ImportError:
+            with open(file_path, encoding="utf-8", errors="replace") as f:
+                text = f.read()
+        return self._split_text(text, file_path, processor="html")
 
     def _process_text(self, file_path: str) -> list[Document]:
-        """Xử lý file text thuần."""
-        with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+        with open(file_path, encoding="utf-8", errors="replace") as f:
             text = f.read()
         return self._split_text(text, file_path, processor="text")
 
+    # ------------------------------------------------------------------
+    # Shared splitter
+    # ------------------------------------------------------------------
+
     def _split_text(self, text: str, source: str, processor: str = "default") -> list[Document]:
-        """Tạo LangChain Document rồi split."""
         base_doc = Document(
             page_content=text,
             metadata={
@@ -169,6 +295,6 @@ if __name__ == "__main__":
         sys.exit(1)
     proc = DocumentProcessor(chunk_size=512, chunk_overlap=64)
     docs = proc.process(sys.argv[1])
-    print(f"\n✅ {len(docs)} chunks")
-    print(f"Chunk đầu tiên:\n{docs[0].page_content[:300]}")
+    print(f"\n{len(docs)} chunks")
+    print(f"Chunk 1: {docs[0].page_content[:300]}")
     print(f"Metadata: {docs[0].metadata}")
