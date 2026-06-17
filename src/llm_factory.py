@@ -1,39 +1,71 @@
 """
 llm_factory.py — Tạo LLM instance theo provider được cấu hình
 Hỗ trợ: groq (miễn phí), ollama (local), openai
+R2: Cache LLM instance để tránh khởi tạo lại mỗi lần chat.
 """
 import logging
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# ------------------------------------------------------------------
+# R2: Module-level cache — (provider, model) → LLM instance
+# ------------------------------------------------------------------
+_llm_cache: dict[str, Any] = {}
 
-def get_llm(config) -> Any:
+
+def _cache_key(config) -> str:
+    """Tạo cache key từ provider + model name."""
+    provider = getattr(config, "llm_provider", "auto").lower()
+    if provider == "groq":
+        model = getattr(config, "groq_model", "llama-3.3-70b-versatile")
+    elif provider == "ollama":
+        model = getattr(config, "llm_model", "qwen2.5:7b")
+    elif provider == "openai":
+        model = "gpt-4o-mini"
+    else:
+        model = "auto"
+    return f"{provider}::{model}"
+
+
+def get_llm(config, force_refresh: bool = False) -> Any:
     """
     Trả về LLM instance dựa trên config.llm_provider.
-    
-    Ưu tiên:
-      1. Nếu GROQ_API_KEY có trong env/config → dùng Groq
-      2. Nếu Ollama đang chạy → dùng Ollama  
-      3. Fallback: raise lỗi rõ ràng
+    R2: Cache instance — chỉ tạo mới khi provider/model thay đổi
+         hoặc khi force_refresh=True (sau connection error).
     """
-    provider = getattr(config, "llm_provider", "auto").lower()
+    global _llm_cache
 
-    # Auto-detect nếu không set
+    key = _cache_key(config)
+
+    if not force_refresh and key in _llm_cache:
+        return _llm_cache[key]
+
+    provider = getattr(config, "llm_provider", "auto").lower()
     if provider == "auto":
         provider = _auto_detect(config)
 
     if provider == "groq":
-        return _make_groq(config)
+        instance = _make_groq(config)
     elif provider == "ollama":
-        return _make_ollama(config)
+        instance = _make_ollama(config)
     elif provider == "openai":
-        return _make_openai(config)
+        instance = _make_openai(config)
     else:
         raise ValueError(
             f"Provider không hợp lệ: '{provider}'. "
             "Dùng: groq | ollama | openai"
         )
+
+    _llm_cache[key] = instance
+    return instance
+
+
+def invalidate_llm_cache():
+    """Xóa toàn bộ LLM cache (dùng khi đổi config lúc runtime)."""
+    global _llm_cache
+    _llm_cache.clear()
+    logger.info("LLM cache đã được xóa")
 
 
 def _auto_detect(config) -> str:

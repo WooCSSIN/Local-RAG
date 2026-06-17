@@ -1,9 +1,10 @@
 """
 retriever.py — Hybrid Search + Reranker
 Kết hợp BM25 (keyword) + Dense vector (semantic) + FlashRank reranker.
-Dùng FAISS làm vector store mặc định (không cần cài server).
-Nếu có Qdrant, tự động chuyển sang Qdrant cho hybrid search tốt hơn.
+R1: FAISS index persistent (lưu disk, load < 1s)
+R4: Duplicate guard (SHA-256 hash)
 """
+import hashlib
 import logging
 import pickle
 from pathlib import Path
@@ -37,8 +38,10 @@ class HybridRAGRetriever:
         # Đường dẫn lưu trữ persistent
         self._store_dir = Path(config.qdrant_path)  # reuse path config
         self._store_dir.mkdir(parents=True, exist_ok=True)
-        self._faiss_path = self._store_dir / "faiss_index"
+        self._faiss_bin_path = self._store_dir / "faiss_index.bin"   # R1: lưu FAISS binary
         self._docs_path = self._store_dir / "documents.pkl"
+        self._hashes_path = self._store_dir / "file_hashes.pkl"      # R4: duplicate guard
+        self._file_hashes: set[str] = set()
 
         # Load nếu đã có data
         self._load_persistent()
@@ -119,6 +122,9 @@ class HybridRAGRetriever:
         dim = embeddings_np.shape[1]
         self._faiss_index = faiss.IndexFlatIP(dim)  # Inner Product = cosine sau normalize
         self._faiss_index.add(embeddings_np)
+
+        # R1: Lưu FAISS index xuống disk ngay sau khi build
+        self._save_faiss_index()
         logger.info("✅ FAISS index ready")
 
     # ------------------------------------------------------------------
@@ -151,6 +157,30 @@ class HybridRAGRetriever:
         return self._reranker
 
     # ------------------------------------------------------------------
+    # R4: Duplicate guard
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def compute_file_hash(file_path: str) -> str:
+        """Tính SHA-256 hash của file để phát hiện duplicate."""
+        h = hashlib.sha256()
+        with open(file_path, "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                h.update(chunk)
+        return h.hexdigest()
+
+    def is_duplicate(self, file_path: str) -> bool:
+        """Trả về True nếu file đã được index (dựa trên SHA-256 hash)."""
+        file_hash = self.compute_file_hash(file_path)
+        return file_hash in self._file_hashes
+
+    def register_file(self, file_path: str):
+        """Đăng ký hash của file sau khi index thành công."""
+        file_hash = self.compute_file_hash(file_path)
+        self._file_hashes.add(file_hash)
+        self._save_hashes()
+
+    # ------------------------------------------------------------------
     # Core methods
     # ------------------------------------------------------------------
 
@@ -159,27 +189,22 @@ class HybridRAGRetriever:
         if not docs:
             return
         self.documents.extend(docs)
-        # Reset indexes để rebuild
         self._faiss_index = None
         self._bm25 = None
-        # Rebuild ngay
         self._build_faiss()
         self._build_bm25()
-        # Lưu persistent
         self._save_persistent()
         logger.info(f"✅ Đã thêm {len(docs)} docs. Tổng: {len(self.documents)}")
 
     def clear(self):
-        """Xóa toàn bộ index."""
+        """Xóa toàn bộ index và file hashes."""
         self.documents = []
         self._faiss_index = None
         self._bm25 = None
-        # Xóa file persistent
-        if self._docs_path.exists():
-            self._docs_path.unlink()
-        import shutil
-        if self._faiss_path.exists():
-            shutil.rmtree(self._faiss_path, ignore_errors=True)
+        self._file_hashes = set()
+        for p in [self._docs_path, self._faiss_bin_path, self._hashes_path]:
+            if p.exists():
+                p.unlink()
         logger.info("✅ Đã xóa toàn bộ index")
 
     def retrieve(self, query: str, k: Optional[int] = None) -> list[Document]:
@@ -290,32 +315,98 @@ class HybridRAGRetriever:
             return docs[:k]
 
     # ------------------------------------------------------------------
-    # Persistent storage
+    # Persistent storage — R1: FAISS binary + documents.pkl
     # ------------------------------------------------------------------
 
+    def _save_faiss_index(self):
+        """Lưu FAISS index xuống disk dạng binary."""
+        if self._faiss_index is None:
+            return
+        try:
+            import faiss
+            faiss.write_index(self._faiss_index, str(self._faiss_bin_path))
+            logger.debug(f"Đã lưu FAISS index → {self._faiss_bin_path}")
+        except Exception as e:
+            logger.warning(f"Không thể lưu FAISS index: {e}")
+
+    def _load_faiss_index(self) -> bool:
+        """
+        Load FAISS index từ disk.
+        Trả về True nếu thành công và số vector khớp với doc count.
+        """
+        if not self._faiss_bin_path.exists():
+            return False
+        try:
+            import faiss
+            index = faiss.read_index(str(self._faiss_bin_path))
+            # Kiểm tra số vector khớp với số docs
+            if index.ntotal != len(self.documents):
+                logger.warning(
+                    f"FAISS index ({index.ntotal} vectors) không khớp với "
+                    f"documents ({len(self.documents)}). Sẽ rebuild."
+                )
+                self._faiss_bin_path.unlink(missing_ok=True)
+                return False
+            self._faiss_index = index
+            logger.info(f"✅ Loaded FAISS index từ disk ({index.ntotal} vectors)")
+            return True
+        except Exception as e:
+            logger.warning(f"FAISS index bị lỗi: {e}. Xóa và rebuild.")
+            self._faiss_bin_path.unlink(missing_ok=True)
+            return False
+
     def _save_persistent(self):
-        """Lưu documents để dùng lại sau khi restart."""
+        """Lưu documents.pkl và FAISS index xuống disk."""
         try:
             with open(self._docs_path, "wb") as f:
                 pickle.dump(self.documents, f)
             logger.debug(f"Đã lưu {len(self.documents)} docs → {self._docs_path}")
         except Exception as e:
-            logger.warning(f"Không thể lưu persistent: {e}")
+            logger.warning(f"Không thể lưu documents: {e}")
+
+    def _save_hashes(self):
+        """Lưu file hashes xuống disk."""
+        try:
+            with open(self._hashes_path, "wb") as f:
+                pickle.dump(self._file_hashes, f)
+        except Exception as e:
+            logger.warning(f"Không thể lưu file hashes: {e}")
 
     def _load_persistent(self):
-        """Load documents từ disk nếu có."""
-        if self._docs_path.exists():
+        """
+        Load documents từ disk, sau đó load FAISS index.
+        Nếu FAISS index không hợp lệ → rebuild (chỉ embed lại, không đọc file).
+        """
+        if not self._docs_path.exists():
+            return
+        try:
+            with open(self._docs_path, "rb") as f:
+                self.documents = pickle.load(f)
+            logger.info(f"✅ Loaded {len(self.documents)} docs từ persistent store")
+        except Exception as e:
+            logger.warning(f"Không thể load documents: {e}. Bắt đầu từ đầu.")
+            self.documents = []
+            return
+
+        # Load file hashes (R4)
+        if self._hashes_path.exists():
             try:
-                with open(self._docs_path, "rb") as f:
-                    self.documents = pickle.load(f)
-                logger.info(f"✅ Loaded {len(self.documents)} docs từ persistent store")
-                # Rebuild indexes
-                if self.documents:
-                    self._build_faiss()
-                    self._build_bm25()
-            except Exception as e:
-                logger.warning(f"Không thể load persistent: {e}. Bắt đầu từ đầu.")
-                self.documents = []
+                with open(self._hashes_path, "rb") as f:
+                    self._file_hashes = pickle.load(f)
+                logger.debug(f"Loaded {len(self._file_hashes)} file hashes")
+            except Exception:
+                self._file_hashes = set()
+
+        if not self.documents:
+            return
+
+        # R1: Thử load FAISS từ disk trước
+        if not self._load_faiss_index():
+            logger.info("Rebuild FAISS index từ documents...")
+            self._build_faiss()
+
+        # BM25 luôn rebuild từ text (rất nhanh, < 1 giây)
+        self._build_bm25()
 
     @property
     def doc_count(self) -> int:
