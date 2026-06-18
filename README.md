@@ -19,7 +19,6 @@
 
 **Local RAG Chatbot v2** là hệ thống chat với tài liệu sử dụng kỹ thuật **Retrieval-Augmented Generation (RAG)**. Upload PDF, Word, TXT... và đặt câu hỏi bằng ngôn ngữ tự nhiên — hệ thống tự tìm đúng đoạn liên quan và trả lời chính xác kèm nguồn.
 
-Được nâng cấp hoàn toàn từ [haooyuee/Local-RAG-Chatbot](https://github.com/haooyuee/Local-RAG-Chatbot) với stack hiện đại nhất 2025.
 
 ---
 
