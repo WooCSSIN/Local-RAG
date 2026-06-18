@@ -1,4 +1,4 @@
-# 🤖 Local RAG Chatbot v2
+# 🤖 Local RAG Chatbot Gree
 
 <div align="center">
 
@@ -17,7 +17,7 @@
 
 ## 📌 Giới thiệu
 
-**Local RAG Chatbot v2** là hệ thống chat với tài liệu sử dụng kỹ thuật **Retrieval-Augmented Generation (RAG)**. Upload PDF, Word, TXT... và đặt câu hỏi bằng ngôn ngữ tự nhiên — hệ thống tự tìm đúng đoạn liên quan và trả lời chính xác kèm nguồn.
+**Local RAG Chatbot Gree** là hệ thống chat với tài liệu sử dụng kỹ thuật **Retrieval-Augmented Generation (RAG)**. Upload PDF, Word, TXT... và đặt câu hỏi bằng ngôn ngữ tự nhiên — hệ thống tự tìm đúng đoạn liên quan và trả lời chính xác kèm nguồn.
 
 
 ---
@@ -37,7 +37,7 @@
 
 ---
 
-## 🆚 So sánh v1 vs v2
+## 🆚 So sánh v1 vs Gree
 
 | Thành phần | v1 | v2 |
 |---|---|---|
