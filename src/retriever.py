@@ -69,15 +69,25 @@ class HybridRAGRetriever:
         return self._embed_model
 
     def _embed_texts(self, texts: list[str]) -> list[list[float]]:
-        """Embed danh sách text, hỗ trợ cả FastEmbed và HuggingFaceEmbeddings."""
+        """
+        Embed danh sách text theo batch để tránh spike RAM.
+        Hỗ trợ cả FastEmbed và HuggingFaceEmbeddings.
+        """
         model = self._get_embed_model()
+        model_name = self.config.embedding_model
+        BATCH_SIZE = 64  # xử lý 64 texts mỗi lần, tránh OOM
+
         try:
-            # FastEmbed interface — nomic cần prefix "passage: "
-            model_name = self.config.embedding_model
+            # FastEmbed interface
             if "nomic" in model_name:
                 texts = [f"passage: {t}" for t in texts]
-            embeddings = list(model.embed(texts))
-            return [e.tolist() for e in embeddings]
+
+            all_embeddings = []
+            for i in range(0, len(texts), BATCH_SIZE):
+                batch = texts[i:i + BATCH_SIZE]
+                batch_embeddings = list(model.embed(batch))
+                all_embeddings.extend([e.tolist() for e in batch_embeddings])
+            return all_embeddings
         except AttributeError:
             # LangChain interface
             return model.embed_documents(texts)
@@ -185,16 +195,40 @@ class HybridRAGRetriever:
     # ------------------------------------------------------------------
 
     def add_documents(self, docs: list[Document]):
-        """Thêm documents mới vào index."""
+        """
+        Thêm documents mới vào index.
+        Tối ưu: chỉ embed docs MỚI và add vào FAISS hiện có thay vì rebuild toàn bộ.
+        """
         if not docs:
             return
+
+        import numpy as np
+        import faiss
+
+        # Embed chỉ docs mới
+        logger.info(f"Embedding {len(docs)} docs mới...")
+        new_texts = [d.page_content for d in docs]
+        new_embeddings = self._embed_texts(new_texts)
+        new_np = np.array(new_embeddings, dtype="float32")
+        faiss.normalize_L2(new_np)
+
+        # Thêm vào FAISS index hiện có (hoặc tạo mới nếu chưa có)
+        if self._faiss_index is None:
+            dim = new_np.shape[1]
+            self._faiss_index = faiss.IndexFlatIP(dim)
+
+        self._faiss_index.add(new_np)
+
+        # Thêm vào document list SAU khi embed xong
         self.documents.extend(docs)
-        self._faiss_index = None
-        self._bm25 = None
-        self._build_faiss()
+
+        # BM25 rebuild nhanh từ text (không cần GPU/embedding)
         self._build_bm25()
+
+        # Lưu xuống disk
+        self._save_faiss_index()
         self._save_persistent()
-        logger.info(f"✅ Đã thêm {len(docs)} docs. Tổng: {len(self.documents)}")
+        logger.info(f"✅ Đã thêm {len(docs)} docs mới. Tổng: {len(self.documents)}")
 
     def clear(self):
         """Xóa toàn bộ index và file hashes."""

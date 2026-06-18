@@ -50,7 +50,7 @@ class RAGConfig(BaseSettings):
     # Retrieval
     # --------------------------------------------------
     retrieval_k: int = Field(default=6, gt=0, description="Số docs trả về cuối cùng sau rerank")
-    retrieval_fetch_k: int = Field(default=20, gt=0, description="Số docs fetch trước khi rerank")
+    retrieval_fetch_k: int = Field(default=12, gt=0, description="Số docs fetch trước khi rerank")
     use_hybrid_search: bool = Field(default=True, description="Kết hợp BM25 + vector search")
     use_reranker: bool = Field(default=True, description="Rerank bằng FlashRank cross-encoder")
     reranker_model: str = Field(default="ms-marco-MiniLM-L-12-v2")

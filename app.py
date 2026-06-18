@@ -29,6 +29,20 @@ processor = DocumentProcessor(chunk_size=config.chunk_size, chunk_overlap=config
 retriever = HybridRAGRetriever(config)
 session_mgr = SessionManager()  # R8+R9: session manager
 
+# Preload reranker + embedding model lúc startup để tránh delay ở câu hỏi đầu tiên
+if config.use_reranker:
+    try:
+        retriever._get_reranker()
+        logger.info("✅ Reranker preloaded")
+    except Exception as e:
+        logger.warning(f"Reranker preload skipped: {e}")
+
+try:
+    retriever._get_embed_model()
+    logger.info("✅ Embedding model preloaded")
+except Exception as e:
+    logger.warning(f"Embedding preload skipped: {e}")
+
 
 # ------------------------------------------------------------------
 # Upload & Index — R3: Progress, R4: Duplicate check
@@ -207,35 +221,76 @@ def clear_index_fn():
 # R5: Export chat ra file
 # ------------------------------------------------------------------
 def export_chat(history, fmt="markdown"):
-    """Xuất lịch sử chat ra file TXT hoặc Markdown."""
+    """
+    Xuất lịch sử chat ra file TXT hoặc Markdown.
+    R5 AC4: timestamp từ session_manager (lúc nhận message), không phải lúc export.
+    R5 AC6: chỉ apply format được chọn.
+    R5 AC7: thông báo khi history rỗng.
+    """
     if not history:
         return None, "⚠️ Chưa có nội dung chat để xuất."
 
     now = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     lines = []
 
+    # Lấy timestamps từ session_manager nếu có
+    session_timestamps: list[str] = []
+    try:
+        sid = session_mgr.current_id
+        if sid:
+            session_data = session_mgr.get_session(sid)
+            if session_data:
+                session_timestamps = [
+                    m.get("timestamp", "") for m in session_data.get("messages", [])
+                ]
+    except Exception:
+        pass
+
+    def _get_ts(idx: int) -> str:
+        """Lấy timestamp của message theo index, fallback về now."""
+        if idx < len(session_timestamps) and session_timestamps[idx]:
+            try:
+                # ISO 8601 UTC → local HH:MM:SS
+                dt = datetime.datetime.fromisoformat(session_timestamps[idx].replace("Z", "+00:00"))
+                local_dt = dt.astimezone()
+                return local_dt.strftime("%H:%M:%S")
+            except Exception:
+                pass
+        return datetime.datetime.now().strftime("%H:%M:%S")
+
     if fmt == "txt":
+        # R5 AC4: format [HH:MM:SS] Role: content, dùng timestamp lúc nhận
         filename = f"chat_export_{now}.txt"
+        msg_idx = 0
         for turn in history:
             if isinstance(turn, dict):
-                role = "User" if turn.get("role") == "user" else "Assistant"
+                role_raw = turn.get("role", "")
                 content = turn.get("content", "")
-                ts = datetime.datetime.now().strftime("%H:%M:%S")
+                role = "User" if role_raw == "user" else "Assistant"
+                ts = _get_ts(msg_idx)
                 lines.append(f"[{ts}] {role}: {content}")
                 lines.append("")
+                msg_idx += 1
         content_str = "\n".join(lines)
     else:
+        # R5 AC5: Markdown format — user bold heading, assistant plain paragraph, HR between turns
         filename = f"chat_export_{now}.md"
         lines.append(f"# Chat Export — {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
-        for turn in history:
-            if isinstance(turn, dict):
-                role = turn.get("role", "")
-                content = turn.get("content", "")
-                if role == "user":
-                    lines.append(f"**User:** {content}\n")
-                elif role == "assistant":
-                    lines.append(f"{content}\n")
-                    lines.append("---\n")
+        i = 0
+        turns = list(history)
+        while i < len(turns):
+            turn = turns[i]
+            if not isinstance(turn, dict):
+                i += 1
+                continue
+            role = turn.get("role", "")
+            content = turn.get("content", "")
+            if role == "user":
+                lines.append(f"**User:** {content}\n")
+            elif role == "assistant":
+                lines.append(f"{content}\n")
+                lines.append("---\n")
+            i += 1
         content_str = "\n".join(lines)
 
     # Lưu ra file tạm
@@ -442,10 +497,25 @@ Chat với tài liệu — Hybrid BM25+FAISS+Reranker+LangGraph
                 return
             prev_history = history[:-2] if len(history) >= 2 else []
             history = list(history)
-            # R7: ổn định streaming — catch exception mid-stream
+
+            # R7: batch yield — chỉ re-render UI mỗi 80ms thay vì mỗi token
+            # Giảm số lần Gradio re-render từ 100+ xuống ~15 lần
+            import time as _time
+            _YIELD_INTERVAL = 0.08  # giây — đủ mượt, không quá nhiều re-render
+            _last_yield = _time.monotonic()
+
             try:
+                latest_partial = None
                 for partial in chat_fn(last_user_msg, prev_history):
-                    history[-1] = {"role": "assistant", "content": partial}
+                    latest_partial = partial
+                    now = _time.monotonic()
+                    if now - _last_yield >= _YIELD_INTERVAL:
+                        history[-1] = {"role": "assistant", "content": partial}
+                        yield history
+                        _last_yield = now
+                # Luôn yield lần cuối để đảm bảo response đầy đủ
+                if latest_partial is not None:
+                    history[-1] = {"role": "assistant", "content": latest_partial}
                     yield history
             except Exception as e:
                 history[-1] = {"role": "assistant", "content": f"❌ Lỗi: {e}"}
@@ -459,7 +529,15 @@ Chat với tài liệu — Hybrid BM25+FAISS+Reranker+LangGraph
             fn=_submit, inputs=[msg_box, chatbot_ui], outputs=[chatbot_ui, msg_box]
         ).then(fn=_stream, inputs=[chatbot_ui], outputs=[chatbot_ui])
 
-        clear_chat_btn.click(lambda: [], outputs=[chatbot_ui])
+        def _clear_chat():
+            """R8 AC4: xóa UI và tạo session mới, giữ lại session cũ."""
+            try:
+                session_mgr.create_session()
+            except Exception as e:
+                logger.warning(f"Không thể tạo session mới: {e}")
+            return [], _refresh_sessions()
+
+        clear_chat_btn.click(fn=_clear_chat, outputs=[chatbot_ui, session_dropdown])
 
         # R5: Export chat
         def _export(history, fmt):
@@ -504,6 +582,8 @@ if __name__ == "__main__":
     logger.info(f"Provider : {get_provider_name(config)}")
     logger.info(f"Embedding: {config.embedding_model}")
     logger.info(f"Docs     : {retriever.doc_count} in index")
+    logger.info("=" * 50)
+    logger.info(f">>> Mở trình duyệt: http://localhost:{args.port}")
     logger.info("=" * 50)
 
     demo = build_ui()
