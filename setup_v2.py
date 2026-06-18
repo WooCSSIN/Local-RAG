@@ -159,7 +159,7 @@ def print_quickstart():
 
 
 def main():
-    header("Local RAG Chatbot v2 — Setup Check")
+    header("Local RAG Chatbot Gree — Setup Check")
 
     print("\n[ Python ]")
     check_python()

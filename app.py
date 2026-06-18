@@ -1,5 +1,5 @@
 """
-app.py — Local RAG Chatbot v2
+app.py — Local RAG Chatbot Gree
 Entry point. Chạy: python app.py
 UI: Gradio 6.x, streaming, multi-file, PDF preview
 Supports: Groq (cloud free) | Ollama (local) | OpenAI
@@ -329,10 +329,10 @@ def build_ui():
 
     provider_label = get_provider_name(config)
 
-    with gr.Blocks(title="RAG Chatbot v3") as demo:
+    with gr.Blocks(title="Local RAG Chatbot Gree") as demo:
 
         gr.Markdown(f"""
-# 🤖 RAG Chatbot v3
+# 🤖 Local RAG Chatbot Gree
 Chat với tài liệu — Hybrid BM25+FAISS+Reranker+LangGraph
 **LLM:** `{provider_label}` | **Embed:** `{config.embedding_model.split('/')[-1]}`
         """)
@@ -578,7 +578,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     logger.info("=" * 50)
-    logger.info("Local RAG Chatbot v2")
+    logger.info("Local RAG Chatbot Gree")
     logger.info(f"Provider : {get_provider_name(config)}")
     logger.info(f"Embedding: {config.embedding_model}")
     logger.info(f"Docs     : {retriever.doc_count} in index")
@@ -593,4 +593,6 @@ if __name__ == "__main__":
         share=args.share,
         show_error=True,
         theme=gr.themes.Soft(),
+        favicon_path=None,
+        app_kwargs={"title": "Local RAG Chatbot Gree"},
     )
