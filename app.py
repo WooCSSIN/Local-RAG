@@ -18,6 +18,11 @@ from src.document_processor import DocumentProcessor
 from src.retriever import HybridRAGRetriever
 from src.llm_factory import get_llm, get_provider_name, invalidate_llm_cache
 from src.session_manager import SessionManager
+from src.agentic_graph import build_agentic_graph, make_agentic_state
+from src.prompts import (
+    SYSTEM_PROMPT, GENERATE_WITH_CONTEXT_PROMPT, GENERATE_NO_CONTEXT_PROMPT,
+    build_context_string, build_history_string,
+)
 
 setup_logging("INFO")
 logger = logging.getLogger(__name__)
@@ -42,6 +47,14 @@ try:
     logger.info("✅ Embedding model preloaded")
 except Exception as e:
     logger.warning(f"Embedding preload skipped: {e}")
+
+# Build agentic graph at startup
+agentic_graph = None
+try:
+    agentic_graph = build_agentic_graph(retriever, config)
+    logger.info("✅ Agentic graph built successfully")
+except Exception as e:
+    logger.warning(f"Agentic graph build failed: {e}. Will use direct retrieval fallback.")
 
 
 # ------------------------------------------------------------------
@@ -90,17 +103,11 @@ def upload_and_index(files, progress=None):
 
 
 # ------------------------------------------------------------------
-# Chat function — streaming
+# Chat function — streaming with Agentic RAG pipeline
 # ------------------------------------------------------------------
-def chat_fn(message: str, history: list):
-    """Generator — yield partial response cho Gradio streaming."""
-    message = str(message) if message else ""
-    if not message.strip():
-        return
-
+def _convert_history(history: list) -> list:
+    """Convert Gradio history to LangChain messages."""
     from langchain_core.messages import HumanMessage, AIMessage
-
-    # Convert Gradio 6 history (list of dicts) -> LangChain messages
     lc_history = []
     for turn in (history or []):
         if isinstance(turn, dict):
@@ -111,92 +118,134 @@ def chat_fn(message: str, history: list):
             elif role == "assistant" and content:
                 lc_history.append(AIMessage(content=content))
         elif isinstance(turn, (list, tuple)) and len(turn) == 2:
-            # fallback cho format cũ
             human, ai = turn
             if human:
                 lc_history.append(HumanMessage(content=str(human)))
             if ai:
                 lc_history.append(AIMessage(content=str(ai)))
+    return lc_history
 
+
+def _stream_llm(messages: list, config_obj) -> str:
+    """Stream LLM response, yield partial answers. Returns full answer."""
+    full_answer = ""
     try:
-        # Retrieve docs
-        context_docs = []
-        source_info = ""
-        if retriever.doc_count > 0:
-            try:
-                context_docs = retriever.retrieve(message)
-                if context_docs:
-                    source_info = format_sources(context_docs)
-            except Exception as e:
-                logger.warning(f"Retrieve error: {e}")
-
-        # Build history string
-        history_str = ""
-        if lc_history:
-            recent = lc_history[-config.max_chat_history:]
-            history_str = "\n".join([
-                f"{'User' if isinstance(m, HumanMessage) else 'AI'}: {m.content}"
-                for m in recent
-            ])
-
-        # Build prompt — R6: tiếng Việt có dấu + SystemMessage
-        from langchain_core.messages import SystemMessage
-
-        system_msg = SystemMessage(content=(
-            "Bạn là trợ lý thông minh chuyên trả lời câu hỏi dựa trên tài liệu được cung cấp. "
-            "Luôn trả lời bằng ngôn ngữ của câu hỏi (tiếng Việt hoặc tiếng Anh). "
-            "Nếu ngữ cảnh không đủ thông tin, hãy nói rõ thay vì đoán. "
-            "Khi trích dẫn thông tin, hãy đề cập nguồn tài liệu."
-        ))
-
-        if context_docs:
-            context_str = "\n\n---\n\n".join([
-                f"[{doc.metadata.get('filename', 'tài liệu')}"
-                + (f" trang {doc.metadata['page']}" if doc.metadata.get("page") is not None else "")
-                + f"]\n{doc.page_content}"
-                for doc in context_docs
-            ])
-            user_content = (
-                f"=== NGỮ CẢNH ===\n{context_str}\n================\n\n"
-                + (f"=== LỊCH SỬ ===\n{history_str}\n================\n\n" if history_str else "")
-                + f"Câu hỏi: {message}"
-            )
-        else:
-            user_content = (
-                (f"Lịch sử:\n{history_str}\n\n" if history_str else "")
-                + f"Câu hỏi: {message}"
-            )
-
-        messages = [system_msg, HumanMessage(content=user_content)]
-
-        # Stream LLM response — R2: cached LLM, R7: stable streaming
+        llm = get_llm(config_obj)
+        for chunk in llm.stream(messages):
+            token = chunk.content if hasattr(chunk, "content") else str(chunk)
+            if token:
+                full_answer += token
+                yield full_answer
+    except Exception as conn_err:
+        logger.warning(f"LLM connection error, refresh cache: {conn_err}")
         try:
-            llm = get_llm(config)
+            llm = get_llm(config_obj, force_refresh=True)
             full_answer = ""
             for chunk in llm.stream(messages):
                 token = chunk.content if hasattr(chunk, "content") else str(chunk)
                 if token:
                     full_answer += token
                     yield full_answer
-        except Exception as conn_err:
-            logger.warning(f"LLM connection error, refresh cache: {conn_err}")
-            try:
-                llm = get_llm(config, force_refresh=True)
-                full_answer = ""
-                for chunk in llm.stream(messages):
-                    token = chunk.content if hasattr(chunk, "content") else str(chunk)
-                    if token:
-                        full_answer += token
-                        yield full_answer
-            except Exception as e:
-                raise e
+        except Exception as e:
+            raise e
+    return full_answer
 
-        # Append nguồn tài liệu
+
+def chat_fn(message: str, history: list):
+    """Generator — yield partial response cho Gradio streaming.
+    Uses agentic graph for orchestration (route, decompose, retrieve, assess, grade).
+    Final LLM call streams token-by-token for smooth UX.
+    """
+    message = str(message) if message else ""
+    if not message.strip():
+        return
+
+    from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+
+    lc_history = _convert_history(history)
+
+    try:
+        context_docs = []
+        context_str = ""
+        history_str = ""
+        source_info = ""
+
+        # --- Agentic pipeline (preferred) ---
+        if agentic_graph is not None:
+            try:
+                state = make_agentic_state(message, lc_history)
+                result = agentic_graph.invoke(state)
+
+                context_docs = result.get("context", [])
+                web_content = result.get("web_content", "")
+                source_pages = result.get("source_pages", [])
+
+                if context_docs:
+                    context_str = build_context_string(context_docs)
+                    source_info = format_sources(context_docs)
+                if web_content:
+                    context_str += f"\n\n---\n\n[Web Search Results]\n{web_content}"
+
+                history_str = build_history_string(
+                    result.get("chat_history", [])[:-2],
+                    max_turns=config.max_chat_history,
+                )
+
+                logger.info(
+                    f"Agentic: retrieved {len(context_docs)} docs, "
+                    f"loops={result.get('retrieval_loop_count', 0)}, "
+                    f"grade={result.get('grade_passed', 'N/A')}"
+                )
+            except Exception as e:
+                logger.warning(f"Agentic graph error: {e}. Falling back to direct retrieval.")
+                context_docs = []
+                context_str = ""
+
+        # --- Direct retrieval fallback ---
+        if not context_docs and retriever.doc_count > 0:
+            try:
+                context_docs = retriever.retrieve(message)
+                if context_docs:
+                    context_str = build_context_string(context_docs)
+                    source_info = format_sources(context_docs)
+            except Exception as e:
+                logger.warning(f"Retrieve error: {e}")
+
+        # Build history string if not already set
+        if not history_str and lc_history:
+            history_str = build_history_string(lc_history, config.max_chat_history)
+
+        # --- Build prompt with streaming LLM call ---
+        system_msg = SystemMessage(content=SYSTEM_PROMPT)
+
+        if context_docs or context_str:
+            history_section = f"=== LỊCH SỬ ===\n{history_str}\n================\n\n" if history_str else ""
+            user_content = GENERATE_WITH_CONTEXT_PROMPT.format(
+                context=context_str,
+                history_section=history_section,
+                question=message,
+            )
+        else:
+            history_section = f"Lịch sử:\n{history_str}\n\n" if history_str else ""
+            user_content = GENERATE_NO_CONTEXT_PROMPT.format(
+                history_section=history_section,
+                question=message,
+            )
+
+        messages = [system_msg, HumanMessage(content=user_content)]
+
+        # Stream LLM response token-by-token
+        full_answer = ""
+        for partial in _stream_llm(messages, config):
+            full_answer = partial
+            yield full_answer
+
+        # Append sources
         if source_info:
             full_answer += f"\n\n---\n**Nguồn:**\n{source_info}"
             yield full_answer
 
-        # R8: Lưu cặp hội thoại vào session persistent
+        # Save to session
         try:
             sid = session_mgr.ensure_current()
             session_mgr.add_message(sid, "user", message)

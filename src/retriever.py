@@ -35,6 +35,9 @@ class HybridRAGRetriever:
         self._embed_model = None
         self._reranker = None
 
+        # Performance: O(1) doc lookup map — id(doc) -> list index
+        self._doc_id_map: dict[int, int] = {}
+
         # Đường dẫn lưu trữ persistent
         self._store_dir = Path(config.qdrant_path)  # reuse path config
         self._store_dir.mkdir(parents=True, exist_ok=True)
@@ -194,6 +197,21 @@ class HybridRAGRetriever:
     # Core methods
     # ------------------------------------------------------------------
 
+    def _build_doc_id_map(self):
+        """Rebuild id(doc) -> index map for O(1) lookups in RRF fusion."""
+        self._doc_id_map = {id(doc): idx for idx, doc in enumerate(self.documents)}
+
+    def _get_doc_index(self, doc: Document) -> int:
+        """O(1) lookup of document index. Falls back to linear scan."""
+        idx = self._doc_id_map.get(id(doc))
+        if idx is not None:
+            return idx
+        # Fallback: linear scan (should rarely happen)
+        try:
+            return self.documents.index(doc)
+        except ValueError:
+            return -1
+
     def add_documents(self, docs: list[Document]):
         """
         Thêm documents mới vào index.
@@ -220,7 +238,12 @@ class HybridRAGRetriever:
         self._faiss_index.add(new_np)
 
         # Thêm vào document list SAU khi embed xong
+        base_idx = len(self.documents)
         self.documents.extend(docs)
+
+        # Update doc id map incrementally — O(1) per doc
+        for i, doc in enumerate(docs):
+            self._doc_id_map[id(doc)] = base_idx + i
 
         # BM25 rebuild nhanh từ text (không cần GPU/embedding)
         self._build_bm25()
@@ -235,6 +258,7 @@ class HybridRAGRetriever:
         self.documents = []
         self._faiss_index = None
         self._bm25 = None
+        self._doc_id_map = {}
         self._file_hashes = set()
         for p in [self._docs_path, self._faiss_bin_path, self._hashes_path]:
             if p.exists():
@@ -295,29 +319,25 @@ class HybridRAGRetriever:
         """
         Kết hợp BM25 + dense search dùng Reciprocal Rank Fusion (RRF).
         RRF score = Σ 1/(rank + 60) cho mỗi result list.
+        Performance: dùng _doc_id_map cho O(1) lookup thay vì O(n) linear scan.
         """
         dense_results = self._dense_retrieve(query, k)
         bm25_results = self._bm25_retrieve(query, k)
 
-        # RRF fusion
+        # RRF fusion — O(1) per lookup via _doc_id_map
         rrf_scores: dict[int, float] = {}
         doc_map: dict[int, Document] = {}
 
-        def get_doc_id(doc: Document) -> int:
-            return id(doc) if doc not in self.documents else self.documents.index(doc)
-
         for rank, doc in enumerate(dense_results):
-            try:
-                idx = self.documents.index(doc)
-            except ValueError:
+            idx = self._get_doc_index(doc)
+            if idx < 0:
                 continue
             rrf_scores[idx] = rrf_scores.get(idx, 0) + 1.0 / (rank + 60)
             doc_map[idx] = doc
 
         for rank, doc in enumerate(bm25_results):
-            try:
-                idx = self.documents.index(doc)
-            except ValueError:
+            idx = self._get_doc_index(doc)
+            if idx < 0:
                 continue
             rrf_scores[idx] = rrf_scores.get(idx, 0) + 1.0 / (rank + 60)
             doc_map[idx] = doc
@@ -441,6 +461,9 @@ class HybridRAGRetriever:
 
         # BM25 luôn rebuild từ text (rất nhanh, < 1 giây)
         self._build_bm25()
+
+        # Rebuild doc id map for O(1) lookups
+        self._build_doc_id_map()
 
     @property
     def doc_count(self) -> int:

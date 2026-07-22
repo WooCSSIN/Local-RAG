@@ -4,6 +4,7 @@ Hỗ trợ: PDF, Word (.docx), Excel (.xlsx), HTML, Markdown, TXT
 R10: Thêm DOCX (python-docx fallback) + XLSX (openpyxl fallback)
 Dùng Docling với fallback khi không có.
 """
+import re
 import logging
 from pathlib import Path
 
@@ -318,7 +319,195 @@ class DocumentProcessor:
     # Shared splitter
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # Adaptive splitter — heading/table/code-aware
+    # ------------------------------------------------------------------
+
+    # Patterns for structural detection
+    _HEADING_RE = re.compile(r'^(#{1,6})\s+', re.MULTILINE)
+    _CODE_BLOCK_RE = re.compile(r'^```', re.MULTILINE)
+    _TABLE_ROW_RE = re.compile(r'^\|.+\|$', re.MULTILINE)
+
+    def _split_adaptive(self, text: str, source: str, processor: str = "default") -> list[Document]:
+        """
+        Adaptive chunking that respects document structure:
+        - Heading boundaries: chunks start at headings when possible
+        - Table-aware: keeps complete tables in one chunk
+        - Code block-aware: never splits inside code blocks
+        - Falls back to RecursiveCharacterTextSplitter for remaining text
+        """
+        if not text.strip():
+            return []
+
+        base_meta = {
+            "source": source,
+            "filename": Path(source).name,
+            "doc_type": Path(source).suffix,
+            "processor": processor,
+        }
+
+        # Split text into structural sections
+        sections = self._split_into_sections(text)
+
+        docs = []
+        current_chunk = ""
+        current_heading = ""
+
+        for section in sections:
+            section_type = section["type"]
+            section_text = section["text"]
+
+            if section_type == "table":
+                # Flush current chunk before table
+                if current_chunk.strip():
+                    docs.extend(self._flush_chunk(current_chunk, base_meta, current_heading))
+                    current_chunk = ""
+
+                # If table itself is too large, split it; otherwise keep intact
+                if len(section_text) <= self.chunk_size * 2:
+                    docs.append(Document(
+                        page_content=section_text,
+                        metadata={**base_meta, "chunk_type": "table", "heading": current_heading},
+                    ))
+                else:
+                    docs.extend(self._split_text_fallback(section_text, base_meta, "table"))
+
+            elif section_type == "code_block":
+                # Flush current chunk before code block
+                if current_chunk.strip():
+                    docs.extend(self._flush_chunk(current_chunk, base_meta, current_heading))
+                    current_chunk = ""
+
+                # Keep code block intact if reasonable size
+                if len(section_text) <= self.chunk_size * 3:
+                    docs.append(Document(
+                        page_content=section_text,
+                        metadata={**base_meta, "chunk_type": "code", "heading": current_heading},
+                    ))
+                else:
+                    docs.extend(self._split_text_fallback(section_text, base_meta, "code"))
+
+            elif section_type == "heading":
+                # Flush previous chunk at heading boundary
+                if current_chunk.strip():
+                    docs.extend(self._flush_chunk(current_chunk, base_meta, current_heading))
+                    current_chunk = ""
+                current_heading = section_text.strip()
+
+            else:
+                # Regular paragraph text
+                if len(current_chunk) + len(section_text) > self.chunk_size:
+                    # Flush and start new chunk
+                    if current_chunk.strip():
+                        docs.extend(self._flush_chunk(current_chunk, base_meta, current_heading))
+                    current_chunk = section_text
+                else:
+                    current_chunk += section_text
+
+        # Flush remaining chunk
+        if current_chunk.strip():
+            docs.extend(self._flush_chunk(current_chunk, base_meta, current_heading))
+
+        return docs
+
+    def _split_into_sections(self, text: str) -> list[dict]:
+        """
+        Split text into structural sections: heading, table, code_block, paragraph.
+        """
+        sections = []
+        lines = text.split("\n")
+        current_section = {"type": "paragraph", "text": ""}
+        in_code_block = False
+        in_table = False
+
+        for line in lines:
+            stripped = line.strip()
+
+            # Code block toggle
+            if stripped.startswith("```"):
+                if not in_code_block:
+                    # Flush current section
+                    if current_section["text"].strip():
+                        sections.append(current_section)
+                    current_section = {"type": "code_block", "text": line + "\n"}
+                    in_code_block = True
+                else:
+                    current_section["text"] += line + "\n"
+                    sections.append(current_section)
+                    current_section = {"type": "paragraph", "text": ""}
+                    in_code_block = False
+                continue
+
+            if in_code_block:
+                current_section["text"] += line + "\n"
+                continue
+
+            # Heading detection
+            if self._HEADING_RE.match(stripped):
+                # Flush current section
+                if current_section["text"].strip():
+                    sections.append(current_section)
+                sections.append({"type": "heading", "text": stripped})
+                current_section = {"type": "paragraph", "text": ""}
+                in_table = False
+                continue
+
+            # Table detection
+            is_table_row = bool(self._TABLE_ROW_RE.match(stripped))
+            if is_table_row and not in_table:
+                if current_section["text"].strip():
+                    sections.append(current_section)
+                current_section = {"type": "table", "text": line + "\n"}
+                in_table = True
+                continue
+            elif is_table_row and in_table:
+                current_section["text"] += line + "\n"
+                continue
+            elif not is_table_row and in_table:
+                sections.append(current_section)
+                current_section = {"type": "paragraph", "text": ""}
+                in_table = False
+
+            # Regular paragraph
+            current_section["text"] += line + "\n"
+
+        # Flush final section
+        if current_section["text"].strip():
+            sections.append(current_section)
+
+        return sections
+
+    def _flush_chunk(self, text: str, meta: dict, heading: str = "") -> list[Document]:
+        """Flush accumulated text through the standard splitter."""
+        enriched_meta = {**meta}
+        if heading:
+            enriched_meta["heading"] = heading
+        base_doc = Document(page_content=text.strip(), metadata=enriched_meta)
+        return self._splitter.split_documents([base_doc])
+
+    def _split_text_fallback(self, text: str, meta: dict, chunk_type: str = "") -> list[Document]:
+        """Split text using standard splitter with type metadata."""
+        enriched_meta = {**meta}
+        if chunk_type:
+            enriched_meta["chunk_type"] = chunk_type
+        base_doc = Document(page_content=text.strip(), metadata=enriched_meta)
+        return self._splitter.split_documents([base_doc])
+
     def _split_text(self, text: str, source: str, processor: str = "default") -> list[Document]:
+        """
+        Main entry point for text splitting.
+        Uses adaptive chunking for structured text, fallback for simple text.
+        """
+        # Check if text has structural elements worth preserving
+        has_structure = (
+            self._HEADING_RE.search(text)
+            or self._TABLE_ROW_RE.search(text)
+            or self._CODE_BLOCK_RE.search(text)
+        )
+
+        if has_structure:
+            return self._split_adaptive(text, source, processor)
+
         base_doc = Document(
             page_content=text,
             metadata={

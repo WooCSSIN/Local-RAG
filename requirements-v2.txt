@@ -1,6 +1,6 @@
 # ==================================================
-# Local RAG Chatbot v2 — Dependencies
-# Python 3.14 / Windows — Verified June 2025
+# Local RAG Chatbot v2 — Agentic RAG Dependencies
+# Python 3.10+ / Windows — Verified July 2026
 # ==================================================
 #
 # Cài đặt:
@@ -26,8 +26,8 @@ flashrank>=0.2.9
 # Document processing
 pypdf>=4.0.0
 PyMuPDF>=1.24.0
-python-docx>=1.1.0          # R10: DOCX support
-openpyxl>=3.1.0             # R10: XLSX support
+python-docx>=1.1.0
+openpyxl>=3.1.0
 
 # UI
 gradio>=5.0.0
@@ -36,8 +36,10 @@ gradio>=5.0.0
 ragas>=0.4.0
 datasets>=2.0.0
 
+# Agentic RAG — Web search tool
+duckduckgo-search>=7.0.0
+
 # Utils
 pydantic-settings>=2.6.0
 python-dotenv>=1.0.0
-pyyaml>=6.0
 pandas>=2.0.0
