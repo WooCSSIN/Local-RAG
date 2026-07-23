@@ -1,0 +1,37 @@
+# ==================================================
+# Render.com Blueprint — Local RAG Chatbot Gree
+# ==================================================
+services:
+  - type: web
+    name: local-rag-chatbot
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements-v2.txt
+    startCommand: python app.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.0"
+      - key: RAG_LLM_PROVIDER
+        sync: false
+      - key: RAG_GROQ_API_KEY
+        sync: false
+      - key: RAG_GROQ_MODEL
+        value: "llama-3.3-70b-versatile"
+      - key: RAG_EMBEDDING_MODEL
+        value: "nomic-ai/nomic-embed-text-v1.5"
+      - key: RAG_EMBEDDING_DEVICE
+        value: "cpu"
+      - key: RAG_USE_HYBRID_SEARCH
+        value: "true"
+      - key: RAG_USE_RERANKER
+        value: "true"
+      - key: RAG_RERANKER_MODEL
+        value: "ms-marco-MiniLM-L-12-v2"
+      - key: RAG_RETRIEVAL_K
+        value: "6"
+      - key: RAG_CHUNK_SIZE
+        value: "512"
+      - key: RAG_CHUNK_OVERLAP
+        value: "64"
+      - key: GRADIO_SERVER_NAME
+        value: "0.0.0.0"

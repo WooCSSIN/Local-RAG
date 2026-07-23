@@ -617,12 +617,17 @@ Chat với tài liệu — Hybrid BM25+FAISS+Reranker+LangGraph
 # Main
 # ------------------------------------------------------------------
 if __name__ == "__main__":
+    import os
     import argparse
     import gradio as gr
 
+    # Render.com sets PORT env var; fall back to config default
+    _render_port = int(os.environ.get("PORT", config.server_port))
+    _render_host = os.environ.get("RENDER_EXTERNAL_HOSTNAME", config.server_host)
+
     parser = argparse.ArgumentParser()
-    parser.add_argument("--host", default=config.server_host)
-    parser.add_argument("--port", type=int, default=config.server_port)
+    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--port", type=int, default=_render_port)
     parser.add_argument("--share", action="store_true")
     args = parser.parse_args()
 

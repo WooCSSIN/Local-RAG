@@ -1,4 +1,13 @@
-# 🤖 Local RAG Chatbot Gree
+---
+title: Local RAG Chatbot Gree
+emoji: "\U0001F916"
+colorFrom: blue
+colorTo: purple
+license: apache-2.0
+short_description: Agentic RAG Chatbot — Chat with your documents using Hybrid Search + LangGraph
+---
+
+# Local RAG Chatbot Gree
 
 <div align="center">
 
@@ -26,14 +35,17 @@
 
 | Tính năng | Mô tả |
 |---|---|
-| 📄 **Multi-format** | Hỗ trợ PDF, TXT, HTML, Markdown |
-| 🔍 **Hybrid Search** | Kết hợp BM25 (keyword) + FAISS (semantic) |
+| 📄 **Multi-format** | Hỗ trợ PDF, DOCX, XLSX, TXT, HTML, Markdown, ảnh OCR |
+| 🔍 **Hybrid Search** | Kết hợp BM25 (keyword) + FAISS (semantic) + RRF Fusion |
 | 🎯 **Reranker** | FlashRank cross-encoder tái xếp hạng kết quả |
-| 🧠 **LangGraph** | Pipeline thông minh: route → rewrite → retrieve → generate |
+| 🧠 **Agentic LangGraph** | 9-node pipeline: route → decompose → rewrite → retrieve → assess → tool → generate → grade |
+| 🤖 **Self-Reflection** | Tự đánh giá chất lượng câu trả lời, phát hiện hallucination |
+| 🔧 **Query Decomposition** | Tách câu hỏi phức tạp thành sub-queries |
+| 🌐 **Web Search** | Tích hợp DuckDuckGo khi tài liệu local không đủ |
 | 💬 **Streaming** | Trả lời realtime token-by-token |
 | 🔒 **Bảo mật** | Tài liệu lưu local, không gửi ra ngoài |
 | 🌐 **Multi LLM** | Hỗ trợ Groq (miễn phí), Ollama (local), OpenAI |
-| 📊 **Evaluation** | RAGAS metrics với Ollama local |
+| 📊 **Evaluation** | RAGAS metrics + auto-benchmark |
 
 ---
 
@@ -52,7 +64,44 @@
 
 ---
 
-## 🚀 Cài đặt nhanh
+## Deploy lên Render.com (Miễn phí)
+
+### Bước 1 — Push code lên GitHub
+
+```bash
+git add -A
+git commit -m "feat: ready for Render deployment"
+git push origin main
+```
+
+### Bước 2 — Tạo Web Service trên Render
+
+1. Đăng nhập [render.com](https://render.com) (bằng GitHub account)
+2. **New +** → **Web Service** → Chọn repo `Local-RAG`
+3. Cấu hình:
+   - **Name**: `local-rag-chatbot`
+   - **Runtime**: `Python`
+   - **Build Command**: `pip install -r requirements-v2.txt`
+   - **Start Command**: `python app.py`
+   - **Plan**: `Free`
+4. Thêm **Environment Variables** (mục Environment):
+   - `RAG_LLM_PROVIDER` = `groq`
+   - `RAG_GROQ_API_KEY` = `gsk_...` (lấy tại [console.groq.com](https://console.groq.com))
+   - `RAG_USE_HYBRID_SEARCH` = `true`
+   - `RAG_USE_RERANKER` = `true`
+5. **Create Web Service** → Render tự động build & deploy
+
+> URL sẽ là: `https://local-rag-chatbot.onrender.com`
+
+### Lưu ý (Free tier)
+
+- Cold start ~30s sau khi không dùng 15 phút
+- Index trống khi khởi động — upload tài liệu qua UI
+- Embedding model (~270MB) tự download lần đầu
+
+---
+
+## Cài đặt Local
 
 ### Yêu cầu
 - Python 3.10+
@@ -199,17 +248,26 @@ Local-RAG/
 ├── setup_v2.py               # 🔧 Health check script
 │
 ├── src/
-│   ├── document_processor.py # 📄 Xử lý đa định dạng
-│   ├── retriever.py          # 🔍 Hybrid BM25+FAISS+Reranker
-│   ├── rag_graph.py          # 🕸️  LangGraph pipeline
+│   ├── agentic_graph.py      # 🧠 Agentic LangGraph (9-node pipeline)
+│   ├── agents/               # 🤖 Specialized agents
+│   │   ├── decomposer.py     #    Query decomposition
+│   │   ├── grader.py         #    Answer grading / self-reflection
+│   │   ├── retrieval_agent.py#    Multi-step retrieval
+│   │   └── tools.py          #    Web search (DuckDuckGo)
+│   ├── prompts.py            # 📝 Centralized prompt templates
+│   ├── memory.py             # 💭 Conversation summarization
+│   ├── document_processor.py # 📄 Multi-format + adaptive chunking
+│   ├── retriever.py          # 🔍 Hybrid BM25+FAISS+Reranker (O(1) RRF)
+│   ├── rag_graph.py          # 🕸️  Base LangGraph (backward compat)
 │   ├── llm_factory.py        # 🤖 Groq/Ollama/OpenAI factory
-│   └── utils.py              # 🛠️  Tiện ích
+│   ├── session_manager.py    # 💾 Persistent sessions
+│   └── utils.py              # 🛠️  Utilities
 │
 ├── eval/
 │   ├── evaluate.py           # 📊 RAGAS evaluation
-│   └── ...                   # Notebooks gốc
+│   └── auto_benchmark.py     # 📈 Auto-benchmark tool
 │
-└── qdrant_data/              # 💾 Vector store (local)
+└── qdrant_data/              # 💾 Vector store (local, gitignored)
 ```
 
 ---
@@ -283,11 +341,18 @@ Index    : ✅ 301 docs trong vector store
 
 Pull requests welcome! Các hướng cải thiện tiếp theo:
 
-- [ ] Docling integration (Word, Excel, PowerPoint)
-- [ ] Multi-session support
-- [ ] Chat history persistent (SQLite)
+- [x] Agentic RAG với multi-agent LangGraph
+- [x] Query decomposition cho câu hỏi phức tạp
+- [x] Self-reflection / answer grading
+- [x] Web search integration (DuckDuckGo)
+- [x] Adaptive chunking (heading/table/code-aware)
+- [x] Conversation memory summarization
+- [x] Auto-benchmark tool
+- [ ] Multi-user authentication
+- [ ] Per-project collections
+- [ ] SQLite persistent storage
 - [ ] Docker compose deployment
-- [ ] Vietnamese embedding model
+- [ ] Async I/O optimization
 
 ---
 
