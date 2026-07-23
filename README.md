@@ -42,6 +42,7 @@ short_description: Agentic RAG Chatbot — Chat with your documents using Hybrid
 | 🤖 **Self-Reflection** | Tự đánh giá chất lượng câu trả lời, phát hiện hallucination |
 | 🔧 **Query Decomposition** | Tách câu hỏi phức tạp thành sub-queries |
 | 🌐 **Web Search** | Tích hợp DuckDuckGo khi tài liệu local không đủ |
+| 🎯 **Mock Interview Mode** | Tạo câu hỏi phỏng vấn từ tài liệu, chấm điểm và góp ý |
 | 💬 **Streaming** | Trả lời realtime token-by-token |
 | 🔒 **Bảo mật** | Tài liệu lưu local, không gửi ra ngoài |
 | 🌐 **Multi LLM** | Hỗ trợ Groq (miễn phí), Ollama (local), OpenAI |
@@ -135,6 +136,25 @@ Output: `D:\Local-RAG-Build\installer\Local-RAG-Chatbot-Setup.exe`
 - Lần đầu chạy app, embedding model (~270MB) sẽ tự động download
 - Nên tạo file `.env` trong folder app với `RAG_GROQ_API_KEY`
 - File `.exe` có thể bị Windows Defender false positive (do PyInstaller) — add exception nếu cần
+
+---
+
+## 🎯 Mock Interview Mode
+
+Chuẩn bị phỏng vấn bằng cách upload tài liệu (JD, giáo trình, tài liệu kỹ thuật) rồi vào tab **🎯 Mock Interview**:
+
+1. Nhập chủ đề / vị trí phỏng vấn
+2. Chọn mức độ: **easy / medium / hard**
+3. Chọn số câu hỏi (3-15)
+4. Thêm mô tả bổ sung (JD, kỹ năng cần tập trung)
+5. Nhấn **Bắt đầu phỏng vấn**
+6. Trả lởi từng câu và nhận phản hồi chi tiết:
+   - Điểm số (0-10)
+   - Điểm mạnh / điểm yếu
+   - Nội dung còn thiếu
+   - Câu trả lởi gợi ý
+   - Nhận xét tổng quan
+7. Kết thúc: nhận đánh giá tổng kết buổi phỏng vấn
 
 ---
 

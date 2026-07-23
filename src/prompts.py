@@ -171,6 +171,80 @@ Tóm tắt cuộc hội thoại sau thành một đoạn văn ngắn (2-3 câu),
 Tóm tắt:"""
 
 # ------------------------------------------------------------------
+# Feature: Mock Interview Mode
+# ------------------------------------------------------------------
+MOCK_INTERVIEW_SYSTEM_PROMPT = (
+    "Bạn là một interviewer kỹ thuật giàu kinh nghiệm. "
+    "Nhiệm vụ của bạn là đặt câu hỏi phỏng vấn chất lượng cao, "
+    "đánh giá câu trả lởi của ứng viên một cách công bằng, "
+    "và đưa ra phản hồi giúp ứng viên cải thiện. "
+    "Luôn trả lởi bằng tiếng Việt hoặc tiếng Anh theo ngôn ngữ của câu hỏi."
+)
+
+GENERATE_INTERVIEW_QUESTIONS_PROMPT = """\
+Dựa trên tài liệu và chủ đề được cung cấp, hãy tạo {num_questions} câu hỏi phỏng vấn ở mức độ {difficulty}.
+Mỗi câu hỏi nên kiểm tra hiểu biết sâu, khả năng phân tích hoặc giải quyết vấn đề.
+
+Chủ đề / Vị trí: {topic}
+Mô tả bổ sung: {description}
+
+=== TÀI LIỆU THAM KHẢO ===
+{context}
+==========================
+
+Trả về JSON array theo định dạng sau:
+[
+  {{"id": 1, "question": "...", "category": "...", "key_points": ["...", "..."]}},
+  ...
+]
+
+Câu hỏi:"""
+
+EVALUATE_INTERVIEW_ANSWER_PROMPT = """\
+Bạn là interviewer đánh giá câu trả lởi của ứng viên.
+
+Câu hỏi:
+{question}
+
+Câu trả lởi của ứng viên:
+{answer}
+
+Các điểm then chốt cần có:
+{key_points}
+
+=== TÀI LIỆU THAM KHẢO ===
+{context}
+==========================
+
+Hãy đánh giá theo format JSON:
+{{
+  "score": <số từ 0-10>,
+  "strengths": ["điểm mạnh 1", "điểm mạnh 2"],
+  "weaknesses": ["điểm yếu 1", "điểm yếu 2"],
+  "missing_points": ["nội dung còn thiếu 1", "nội dung còn thiếu 2"],
+  "suggested_answer": "câu trả lởi mẫu ngắn gọn, đầy đủ",
+  "feedback": "phản hồi tổng quan 2-3 câu"
+}}
+
+Đánh giá:"""
+
+FINAL_INTERVIEW_FEEDBACK_PROMPT = """\
+Dựa trên toàn bộ buổi phỏng vấn, hãy đưa ra nhận xét tổng kết.
+
+Thông tin buổi phỏng vấn:
+{interview_summary}
+
+Hãy đưa ra:
+1. Điểm trung bình
+2. Điểm mạnh nổi bật
+3. Điểm cần cải thiện
+4. Lởi khuyên ôn tập cụ thể
+
+Trả lởi bằng tiếng Việt, ngắn gọn, dễ hiểu.
+
+Nhận xét:"""
+
+# ------------------------------------------------------------------
 # Helper: Build context string from documents
 # ------------------------------------------------------------------
 def build_context_string(docs: list) -> str:

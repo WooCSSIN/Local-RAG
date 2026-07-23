@@ -19,6 +19,7 @@ from src.retriever import HybridRAGRetriever
 from src.llm_factory import get_llm, get_provider_name, invalidate_llm_cache
 from src.session_manager import SessionManager
 from src.agentic_graph import build_agentic_graph, make_agentic_state
+from src.mock_interview import MockInterviewEngine, InterviewSession
 from src.prompts import (
     SYSTEM_PROMPT, GENERATE_WITH_CONTEXT_PROMPT, GENERATE_NO_CONTEXT_PROMPT,
     build_context_string, build_history_string,
@@ -55,6 +56,15 @@ try:
     logger.info("✅ Agentic graph built successfully")
 except Exception as e:
     logger.warning(f"Agentic graph build failed: {e}. Will use direct retrieval fallback.")
+
+# Initialize mock interview engine
+mock_interview_engine = None
+try:
+    llm = get_llm(config)
+    mock_interview_engine = MockInterviewEngine(llm=llm, retriever=retriever)
+    logger.info("✅ Mock interview engine ready")
+except Exception as e:
+    logger.warning(f"Mock interview engine init failed: {e}")
 
 
 # ------------------------------------------------------------------
@@ -386,80 +396,131 @@ Chat với tài liệu — Hybrid BM25+FAISS+Reranker+LangGraph
 **LLM:** `{provider_label}` | **Embed:** `{config.embedding_model.split('/')[-1]}`
         """)
 
-        with gr.Row():
-            # ---- Cột trái ----
-            with gr.Column(scale=1, min_width=300):
-                gr.Markdown("### 📁 Upload tài liệu")
-                file_input = gr.File(
-                    label="Chọn file (PDF, DOCX, XLSX, TXT, HTML, MD, ảnh)",
-                    file_count="multiple",
-                    file_types=[".pdf", ".docx", ".xlsx", ".txt", ".html", ".md",
-                                ".png", ".jpg", ".jpeg"],
-                )
-                upload_btn = gr.Button("🔄 Xử lý & Index", variant="primary")
-                upload_status = gr.Textbox(label="Trạng thái", interactive=False, lines=5)
-                pdf_preview = gr.Image(label="PDF Preview", height=350)
-
-                gr.Markdown("### ⚙️ Hệ thống")
-                status_btn = gr.Button("🔍 Kiểm tra")
-                system_status = gr.Textbox(label="Status", interactive=False, lines=8)
-                clear_btn = gr.Button("🗑️ Xóa index", variant="stop")
-
-            # ---- Cột phải: Chat ----
-            with gr.Column(scale=3):
-                gr.Markdown("### 💬 Chat")
-
-                # R9: Session management panel
-                with gr.Accordion("📂 Quản lý phiên chat", open=False):
-                    with gr.Row():
-                        new_session_btn = gr.Button("➕ Phiên mới", size="sm", scale=1)
-                        session_name_input = gr.Textbox(
-                            placeholder="Tên phiên mới...",
-                            show_label=False, scale=3, container=False
-                        )
-                    session_dropdown = gr.Dropdown(
-                        choices=[], label="Chọn phiên", interactive=True
-                    )
-                    with gr.Row():
-                        rename_input = gr.Textbox(
-                            placeholder="Tên mới...", show_label=False, scale=3, container=False
-                        )
-                        rename_btn = gr.Button("✏️ Đổi tên", size="sm", scale=1)
-                        delete_session_btn = gr.Button("🗑️ Xóa phiên", size="sm", scale=1, variant="stop")
-
-                chatbot_ui = gr.Chatbot(height=430)
+        with gr.Tabs():
+            with gr.Tab("💬 Chat"):
                 with gr.Row():
-                    msg_box = gr.Textbox(
-                        placeholder="Nhập câu hỏi, nhấn Enter...",
-                        show_label=False,
-                        scale=5,
-                        container=False,
-                    )
-                    send_btn = gr.Button("Gửi ▶", variant="primary", scale=1)
+                    # ---- Cột trái ----
+                    with gr.Column(scale=1, min_width=300):
+                        gr.Markdown("### 📁 Upload tài liệu")
+                        file_input = gr.File(
+                            label="Chọn file (PDF, DOCX, XLSX, TXT, HTML, MD, ảnh)",
+                            file_count="multiple",
+                            file_types=[".pdf", ".docx", ".xlsx", ".txt", ".html", ".md",
+                                        ".png", ".jpg", ".jpeg"],
+                        )
+                        upload_btn = gr.Button("🔄 Xử lý & Index", variant="primary")
+                        upload_status = gr.Textbox(label="Trạng thái", interactive=False, lines=5)
+                        pdf_preview = gr.Image(label="PDF Preview", height=350)
+
+                        gr.Markdown("### ⚙️ Hệ thống")
+                        status_btn = gr.Button("🔍 Kiểm tra")
+                        system_status = gr.Textbox(label="Status", interactive=False, lines=8)
+                        clear_btn = gr.Button("🗑️ Xóa index", variant="stop")
+
+                    # ---- Cột phải: Chat ----
+                    with gr.Column(scale=3):
+                        gr.Markdown("### 💬 Chat")
+
+                        # R9: Session management panel
+                        with gr.Accordion("📂 Quản lý phiên chat", open=False):
+                            with gr.Row():
+                                new_session_btn = gr.Button("➕ Phiên mới", size="sm", scale=1)
+                                session_name_input = gr.Textbox(
+                                    placeholder="Tên phiên mới...",
+                                    show_label=False, scale=3, container=False
+                                )
+                            session_dropdown = gr.Dropdown(
+                                choices=[], label="Chọn phiên", interactive=True
+                            )
+                            with gr.Row():
+                                rename_input = gr.Textbox(
+                                    placeholder="Tên mới...", show_label=False, scale=3, container=False
+                                )
+                                rename_btn = gr.Button("✏️ Đổi tên", size="sm", scale=1)
+                                delete_session_btn = gr.Button("🗑️ Xóa phiên", size="sm", scale=1, variant="stop")
+
+                        chatbot_ui = gr.Chatbot(height=430)
+                        with gr.Row():
+                            msg_box = gr.Textbox(
+                                placeholder="Nhập câu hỏi, nhấn Enter...",
+                                show_label=False,
+                                scale=5,
+                                container=False,
+                            )
+                            send_btn = gr.Button("Gửi ▶", variant="primary", scale=1)
+
+                        with gr.Row():
+                            clear_chat_btn = gr.Button("🗑️ Xóa chat", size="sm", scale=1)
+                            # R5: Export chat
+                            export_fmt = gr.Radio(
+                                choices=["markdown", "txt"],
+                                value="markdown",
+                                label="Định dạng",
+                                scale=1,
+                            )
+                            export_btn = gr.Button("📥 Xuất chat", size="sm", scale=1)
+                            export_file = gr.File(label="File tải về", scale=2, visible=False)
+                            export_status = gr.Textbox(show_label=False, scale=2, interactive=False, visible=False)
+
+                        gr.Examples(
+                            examples=[
+                                "Tóm tắt nội dung chính của tài liệu.",
+                                "Các phương pháp RAG nào được đề cập?",
+                                "Giải thích về retrieval augmented generation.",
+                                "Kết luận của tài liệu là gì?",
+                            ],
+                            inputs=msg_box,
+                            label="Câu hỏi mẫu",
+                        )
+
+            with gr.Tab("🎯 Mock Interview"):
+                gr.Markdown("### 🎯 Chế độ phỏng vấn thử")
+                gr.Markdown("Upload tài liệu ở tab **Chat** trước, sau đó nhập chủ đề để bắt đầu.")
 
                 with gr.Row():
-                    clear_chat_btn = gr.Button("🗑️ Xóa chat", size="sm", scale=1)
-                    # R5: Export chat
-                    export_fmt = gr.Radio(
-                        choices=["markdown", "txt"],
-                        value="markdown",
-                        label="Định dạng",
-                        scale=1,
-                    )
-                    export_btn = gr.Button("📥 Xuất chat", size="sm", scale=1)
-                    export_file = gr.File(label="File tải về", scale=2, visible=False)
-                    export_status = gr.Textbox(show_label=False, scale=2, interactive=False, visible=False)
+                    with gr.Column(scale=1):
+                        mi_topic = gr.Textbox(
+                            label="Chủ đề / Vị trí phỏng vấn",
+                            placeholder="Ví dụ: Machine Learning Engineer, Backend Java Developer...",
+                        )
+                        mi_difficulty = gr.Dropdown(
+                            label="Mức độ",
+                            choices=["easy", "medium", "hard"],
+                            value="medium",
+                        )
+                        mi_num_questions = gr.Slider(
+                            label="Số câu hỏi",
+                            minimum=3,
+                            maximum=15,
+                            value=5,
+                            step=1,
+                        )
+                        mi_description = gr.Textbox(
+                            label="Mô tả bổ sung (JD, kỹ năng cần tập trung)",
+                            placeholder="Yêu cầu kỹ năng Python, RAG, LangChain...",
+                            lines=3,
+                        )
+                        mi_start_btn = gr.Button("▶ Bắt đầu phỏng vấn", variant="primary")
+                        mi_status = gr.Textbox(label="Trạng thái", interactive=False)
 
-                gr.Examples(
-                    examples=[
-                        "Tóm tắt nội dung chính của tài liệu.",
-                        "Các phương pháp RAG nào được đề cập?",
-                        "Giải thích về retrieval augmented generation.",
-                        "Kết luận của tài liệu là gì?",
-                    ],
-                    inputs=msg_box,
-                    label="Câu hỏi mẫu",
-                )
+                    with gr.Column(scale=2):
+                        mi_progress = gr.Textbox(label="Tiến độ", interactive=False, value="Chưa bắt đầu")
+                        mi_question = gr.Textbox(label="Câu hỏi", interactive=False, lines=3)
+                        mi_answer = gr.Textbox(
+                            label="Câu trả lởi của bạn",
+                            placeholder="Nhập câu trả lởi rồi nhấn Submit...",
+                            lines=5,
+                            interactive=True,
+                        )
+                        with gr.Row():
+                            mi_submit_btn = gr.Button("✅ Nộp câu trả lởi", variant="primary")
+                            mi_next_btn = gr.Button("⏭ Câu tiếp theo", visible=False)
+                        mi_feedback = gr.Markdown("### Phản hồi sẽ hiển thị ở đây")
+                        mi_score = gr.Textbox(label="Điểm", interactive=False, visible=False)
+                        mi_final = gr.Markdown(visible=False)
+
+                # State giữ session
+                mi_session_state = gr.State(None)
 
         # ---- Events ----
 
@@ -609,6 +670,216 @@ Chat với tài liệu — Hybrid BM25+FAISS+Reranker+LangGraph
 
         status_btn.click(fn=system_status_fn, outputs=[system_status])
         clear_btn.click(fn=clear_index_fn, outputs=[upload_status, pdf_preview])
+
+        # ---- Mock Interview events ----
+        def _format_feedback(result):
+            if result is None:
+                return "### Phản hồi sẽ hiển thị ở đây"
+            md = f"""### 📊 Điểm: {result.score:.1f}/10
+
+**Điểm mạnh:**
+"""
+            for s in result.strengths:
+                md += f"\n- ✅ {s}"
+            md += "\n\n**Điểm cần cải thiện:**"
+            for w in result.weaknesses:
+                md += f"\n- ⚠️ {w}"
+            if result.missing_points:
+                md += "\n\n**Nội dung còn thiếu:**"
+                for m in result.missing_points:
+                    md += f"\n- 📝 {m}"
+            md += f"\n\n**Câu trả lởi gợi ý:**\n\n{result.suggested_answer}"
+            md += f"\n\n**Nhận xét:** {result.feedback}"
+            return md
+
+        def _mi_start(topic, difficulty, num_questions, description):
+            if mock_interview_engine is None:
+                return (
+                    None,
+                    "❌ Mock interview engine chưa sẵn sàng.",
+                    "Lỗi", "", "",
+                    "### Phản hồi sẽ hiển thị ở đây",
+                    gr.update(visible=False),
+                    gr.update(visible=False),
+                    gr.update(visible=True),
+                    gr.update(visible=False),
+                )
+            if not topic or not topic.strip():
+                return (
+                    None,
+                    "⚠️ Vui lòng nhập chủ đề / vị trí phỏng vấn.",
+                    "Chưa bắt đầu", "", "",
+                    "### Phản hồi sẽ hiển thị ở đây",
+                    gr.update(visible=False),
+                    gr.update(visible=False),
+                    gr.update(visible=True),
+                    gr.update(visible=False),
+                )
+            try:
+                session = mock_interview_engine.start_session(
+                    topic=topic.strip(),
+                    difficulty=difficulty,
+                    num_questions=int(num_questions),
+                    description=description or "",
+                )
+                if not session.questions:
+                    return (
+                        None,
+                        "❌ Không tạo được câu hỏi.",
+                        "Lỗi", "", "",
+                        "### Phản hồi sẽ hiển thị ở đây",
+                        gr.update(visible=False),
+                        gr.update(visible=False),
+                        gr.update(visible=True),
+                        gr.update(visible=False),
+                    )
+                q = session.questions[0]
+                progress = f"Câu 1 / {len(session.questions)}"
+                return (
+                    session,
+                    "✅ Đã tạo câu hỏi. Hãy trả lởi câu đầu tiên.",
+                    progress,
+                    q.question,
+                    "",
+                    "### Phản hồi sẽ hiển thị ở đây",
+                    gr.update(visible=False),
+                    gr.update(visible=False),
+                    gr.update(visible=True),
+                    gr.update(visible=False),
+                )
+            except Exception as e:
+                logger.error(f"Mock interview start error: {e}")
+                return (
+                    None,
+                    f"❌ Lỗi: {e}",
+                    "Lỗi", "", "",
+                    "### Phản hồi sẽ hiển thị ở đây",
+                    gr.update(visible=False),
+                    gr.update(visible=False),
+                    gr.update(visible=True),
+                    gr.update(visible=False),
+                )
+
+        def _mi_submit(session, answer):
+            if session is None or mock_interview_engine is None:
+                return (
+                    session,
+                    "### Vui lòng bắt đầu phỏng vấn trước.",
+                    gr.update(visible=False),
+                    gr.update(visible=False),
+                    gr.update(visible=False),
+                )
+            if not answer or not answer.strip():
+                return (
+                    session,
+                    "### ⚠️ Vui lòng nhập câu trả lởi trước khi nộp.",
+                    gr.update(visible=False),
+                    gr.update(visible=True),
+                    gr.update(visible=False),
+                )
+            try:
+                result = mock_interview_engine.submit_answer(session, answer.strip())
+                feedback_md = _format_feedback(result)
+                score_text = f"{result.score:.1f}/10"
+                return (
+                    session,
+                    feedback_md,
+                    gr.update(value=score_text, visible=True),
+                    gr.update(visible=False),
+                    gr.update(visible=True),
+                )
+            except Exception as e:
+                logger.error(f"Mock interview submit error: {e}")
+                return (
+                    session,
+                    f"### ❌ Lỗi: {e}",
+                    gr.update(visible=False),
+                    gr.update(visible=True),
+                    gr.update(visible=False),
+                )
+
+        def _mi_next(session):
+            if session is None:
+                return (
+                    session,
+                    "Chưa bắt đầu", "", "",
+                    "### Phản hồi sẽ hiển thị ở đây",
+                    gr.update(visible=False),
+                    gr.update(visible=False, value=""),
+                    gr.update(visible=True),
+                    gr.update(visible=False),
+                )
+            if session.is_complete:
+                try:
+                    final = mock_interview_engine.get_final_feedback(session)
+                    avg = session.average_score
+                    final_md = f"""## 🎉 Kết thúc buổi phỏng vấn
+
+**Điểm trung bình: {avg:.1f}/10**
+
+{final}"""
+                    return (
+                        session,
+                        f"Hoàn thành {len(session.questions)} câu hỏi",
+                        "",
+                        "",
+                        "",
+                        "### Buổi phỏng vấn đã kết thúc",
+                        gr.update(visible=False),
+                        gr.update(visible=True, value=final_md),
+                        gr.update(visible=False),
+                        gr.update(visible=False),
+                    )
+                except Exception as e:
+                    logger.error(f"Mock interview final feedback error: {e}")
+                    return (
+                        session,
+                        "Hoàn thành",
+                        "", "", "",
+                        f"### ❌ Lỗi tổng kết: {e}",
+                        gr.update(visible=False),
+                        gr.update(visible=False),
+                        gr.update(visible=False),
+                        gr.update(visible=False),
+                    )
+            q = session.questions[session.current_index]
+            progress = f"Câu {session.current_index + 1} / {len(session.questions)}"
+            return (
+                session,
+                progress,
+                q.question,
+                "",
+                "",
+                "### Phản hồi sẽ hiển thị ở đây",
+                gr.update(visible=False),
+                gr.update(visible=False, value=""),
+                gr.update(visible=True),
+                gr.update(visible=False),
+            )
+
+        mi_start_btn.click(
+            fn=_mi_start,
+            inputs=[mi_topic, mi_difficulty, mi_num_questions, mi_description],
+            outputs=[
+                mi_session_state, mi_status, mi_progress, mi_question, mi_answer,
+                mi_feedback, mi_score, mi_final, mi_submit_btn, mi_next_btn,
+            ],
+        )
+
+        mi_submit_btn.click(
+            fn=_mi_submit,
+            inputs=[mi_session_state, mi_answer],
+            outputs=[mi_session_state, mi_feedback, mi_score, mi_submit_btn, mi_next_btn],
+        )
+
+        mi_next_btn.click(
+            fn=_mi_next,
+            inputs=[mi_session_state],
+            outputs=[
+                mi_session_state, mi_progress, mi_question, mi_answer,
+                mi_score, mi_feedback, mi_final, mi_submit_btn, mi_next_btn,
+            ],
+        )
 
     return demo
 
