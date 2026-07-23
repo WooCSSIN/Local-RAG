@@ -81,7 +81,7 @@ git push origin main
 3. Cấu hình:
    - **Name**: `local-rag-chatbot`
    - **Runtime**: `Python`
-   - **Build Command**: `pip install -r requirements-v2.txt`
+   - **Build Command**: `pip install -r requirements.txt`
    - **Start Command**: `python app.py`
    - **Plan**: `Free`
 4. Thêm **Environment Variables** (mục Environment):
@@ -113,8 +113,10 @@ git push origin main
 ```bash
 git clone https://github.com/WooCSSIN/Local-RAG.git
 cd Local-RAG
-pip install -r requirements-v2.txt
+pip install -r requirements.txt
 ```
+
+> `requirements-v2.txt` là phiên bản pinned đầy đủ (có thể dùng thay thế).
 
 ### Bước 2 — Cấu hình
 
@@ -243,7 +245,8 @@ RAG_LLM_MODEL=qwen2.5:7b
 Local-RAG/
 ├── app.py                    # 🚀 Entry point — Gradio UI
 ├── config.py                 # ⚙️  Pydantic Settings
-├── requirements-v2.txt       # 📦 Dependencies
+├── requirements.txt          # 📦 Dependencies
+├── requirements-v2.txt       # 📌 Pinned dependencies (fallback)
 ├── .env.example              # 🔑 Template cấu hình
 ├── setup_v2.py               # 🔧 Health check script
 │
