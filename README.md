@@ -101,6 +101,43 @@ git push origin main
 
 ---
 
+## 📦 Đóng gói thành phần mềm Windows (.exe)
+
+### Yêu cầu
+
+- Windows 10/11
+- Python 3.11
+- ~10GB disk space để build
+- Cài [Inno Setup](https://jrsoftware.org/isinfo.php) (nếu muốn tạo installer)
+
+### Bước 1 — Cài PyInstaller
+
+```bash
+pip install pyinstaller
+```
+
+### Bước 2 — Build
+
+```bash
+python build_exe.py
+```
+
+Output: `D:\Local-RAG-Build\dist\Local-RAG\`
+
+### Bước 3 — Tạo installer (tùy chọn)
+
+Mở [installer.iss](installer.iss) bằng Inno Setup → Compile.
+
+Output: `D:\Local-RAG-Build\installer\Local-RAG-Chatbot-Setup.exe`
+
+### Lưu ý
+
+- Lần đầu chạy app, embedding model (~270MB) sẽ tự động download
+- Nên tạo file `.env` trong folder app với `RAG_GROQ_API_KEY`
+- File `.exe` có thể bị Windows Defender false positive (do PyInstaller) — add exception nếu cần
+
+---
+
 ## Cài đặt Local
 
 ### Yêu cầu
